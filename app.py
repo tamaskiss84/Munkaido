@@ -108,6 +108,35 @@ else:
                 st.warning(f"{daily_sum} óra")
             else:
                 st.error("0 óra")
+
+st.divider()
+    with st.form("work_form"):
+        st.subheader("Munkaidő rögzítése")
+        # Csak a dolgozó saját projektjei jelenjenek meg
+        sel_proj = st.selectbox("Válassz projektet", project_list)
+        # Nap kiválasztása
+        sel_day = st.selectbox("Melyik nap?", days)
+        hours_input = st.number_input("Ledolgozott órák", min_value=0.5, max_value=8.0, step=0.5)
+        
+        if st.form_submit_button("Mentés a táblázatba"):
+            if sel_proj != "Nincs projekt":
+                # Dátum kiszámítása a kiválasztott nap alapján
+                target_date = dates[days.index(sel_day)].strftime("%Y-%m-%d")
+                p_id = my_projects_df[my_projects_df['name'] == sel_proj]['id'].values[0]
+                
+                # Új sor hozzáadása a logs táblához
+                current_logs = get_data("logs")
+                new_entry = pd.DataFrame([{
+                    "email": st.session_state.user_email,
+                    "project_id": int(p_id),
+                    "date": target_date,
+                    "hours": float(hours_input)
+                }])
+                
+                updated_logs = pd.concat([current_logs, new_entry], ignore_index=True)
+                conn.update(worksheet="logs", data=updated_logs)
+                st.success(f"Sikeres mentés: {sel_day} - {hours_input} óra")
+                st.rerun()
 # Kijelentkezés gomb az alján
 if st.sidebar.button("Kijelentkezés"):
     st.session_state.logged_in = False
