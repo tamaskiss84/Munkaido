@@ -16,7 +16,75 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# ==============================================================================
+# MOBIL APP (PWA) META-TAGEK ÉS RESZPONZÍV ÉRINTŐKÉPERNYŐS CSS
+# ==============================================================================
+st.markdown("""
+<!-- PWA / Mobil App viselkedés iOS és Android rendszeren -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Chronos App">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
+<style>
+    /* Natív app érzet: Streamlit felső díszcsík és lábléc finomítása */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {background: transparent !important;}
+
+    /* Érintőbarát (Touch-friendly) gombok és beviteli mezők (min. 48px magasság) */
+    .stButton > button {
+        min-height: 48px !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+    }
+    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stDateInput input {
+        min-height: 45px !important;
+        border-radius: 8px !important;
+    }
+
+    /* MOBIL NÉZET (768px alatti kijelzők: Okostelefonok) */
+    @media (max-width: 768px) {
+        /* Fő konténer margóinak csökkentése, hogy több hely maradjon a tartalomnak */
+        .block-container {
+            padding-top: 1.5rem !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+            padding-bottom: 4rem !important;
+        }
+        /* Oszlopok automatikus egymás alá tördelése mobilon */
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+            gap: 0.5rem !important;
+        }
+        div[data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+        /* Vízszintesen görgethető fülek (Tabs) ujjhúzással */
+        div[data-baseweb="tab-list"] {
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            flex-wrap: nowrap !important;
+            padding-bottom: 4px !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        /* Kártyák kompaktabb térköze mobilon */
+        .saas-card {
+            padding: 14px !important;
+            margin-bottom: 10px !important;
+        }
+        .saas-card-header {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 6px !important;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
 st.markdown("""
 <style>
     /* Alap kártyák és konténerek */
