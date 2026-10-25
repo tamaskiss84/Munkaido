@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 import re
+import html
 
 # ==============================================================================
 # 0. KONFIGURÁCIÓ, PWA META-TAGEK ÉS RESZPONZÍV MOBIL / ENTERPRISE CSS
@@ -259,15 +260,16 @@ def normalize_schemas(users_df, projects_df, logs_df):
         users_df = u_Seed.copy()
     else:
         for col, default in [
-            ("email", ""), ("password", "123"), ("name", ""),
+            ("email", ""), ("password", ""), ("name", ""),
             ("role", "Dolgozó"), ("title", "Munkatárs"),
             ("department", "Általános"), ("weekly_capacity", 40),
         ]:
             if col not in users_df.columns:
                 users_df[col] = default
-        users_df["email"] = users_df["email"].fillna("").astype(str).str.strip()
+        users_df["email"] = users_df["email"].fillna("").astype(str).str.strip().replace({"nan":"", "None":""})
+        users_df = users_df[users_df["email"].str.contains("@", regex=False)].copy()
         users_df["password"] = users_df["password"].fillna("").astype(str).str.strip()
-        users_df["role"] = users_df["role"].replace({"Vezető": "Admin"})
+        users_df["role"] = users_df["role"].fillna("Dolgozó").replace({"Vezető": "Admin"})
         users_df["name"] = users_df.apply(lambda r: r["email"].split("@")[0].replace(".", " ").title() if not str(r.get("name", "")).strip() else r["name"], axis=1)
         users_df["weekly_capacity"] = pd.to_numeric(users_df["weekly_capacity"], errors="coerce").fillna(40).astype(int)
 
@@ -283,6 +285,9 @@ def normalize_schemas(users_df, projects_df, logs_df):
         ]:
             if col not in projects_df.columns:
                 projects_df[col] = default
+        for col, default in [("work_number", ""), ("company_or_activity", ""), ("group_name", ""), ("budget_mode", ""), ("notes", "")]:
+            if col not in projects_df.columns:
+                projects_df[col] = default
         projects_df["id"] = pd.to_numeric(projects_df["id"], errors="coerce").fillna(0).astype(int)
         projects_df["budget_hours"] = pd.to_numeric(projects_df["budget_hours"], errors="coerce").fillna(0.0)
         projects_df["monthly_retainer_hours"] = pd.to_numeric(projects_df["monthly_retainer_hours"], errors="coerce").fillna(0.0)
@@ -292,6 +297,23 @@ def normalize_schemas(users_df, projects_df, logs_df):
             max_id = projects_df["id"].max() if not projects_df.empty else 0
             admin_rows["id"] = range(max_id + 1, max_id + 1 + len(admin_rows))
             projects_df = pd.concat([projects_df, admin_rows], ignore_index=True)
+
+    # Visszafelé kompatibilis munkaszám-migráció: meglévő projekt-ID-k nem változnak.
+    for col, default in [("work_number", ""), ("company_or_activity", ""), ("group_name", ""), ("budget_mode", ""), ("notes", "")]:
+        if col not in projects_df.columns:
+            projects_df[col] = default
+    for idx, row in projects_df.iterrows():
+        ptype = str(row.get("project_type", "Fixed"))
+        prefix = {"Fixed": "PRJ", "Retainer": "ALT", "Admin": "BEL"}.get(ptype, "PRJ")
+        if not str(row.get("work_number", "")).strip() or str(row.get("work_number", "")).lower() == "nan":
+            projects_df.at[idx, "work_number"] = f"{prefix}{int(row['id']):04d}"
+        if not str(row.get("group_name", "")).strip() or str(row.get("group_name", "")).lower() == "nan":
+            projects_df.at[idx, "group_name"] = {"Fixed": "Ügyfélprojektek", "Retainer": "Általános / átalánydíjas", "Admin": "Belső / adminisztráció"}.get(ptype, "Ügyfélprojektek")
+        if not str(row.get("budget_mode", "")).strip() or str(row.get("budget_mode", "")).lower() == "nan":
+            projects_df.at[idx, "budget_mode"] = "limited" if ptype == "Fixed" else "unlimited"
+    projects_df["work_number"] = projects_df["work_number"].astype(str).str.strip()
+    projects_df["company_or_activity"] = projects_df["company_or_activity"].fillna("").astype(str).replace("nan", "")
+    projects_df["group_name"] = projects_df["group_name"].fillna("Ügyfélprojektek").astype(str)
 
     if logs_df is None or logs_df.empty:
         logs_df = l_Seed.copy()
@@ -318,13 +340,10 @@ def init_data_store():
             st.session_state.gsheets_conn = conn
             st.session_state.gsheets_connected = True
             u_df, p_df, l_df = normalize_schemas(u_raw, p_raw, l_raw)
-            if u_raw.empty:
-                conn.update(worksheet="users", data=u_df)
-            if p_raw.empty:
-                conn.update(worksheet="projects", data=p_df)
-            if l_raw.empty:
-                conn.update(worksheet="logs", data=l_df)
-        except Exception:
+            if u_raw.empty or p_raw.empty:
+                raise ValueError("A users vagy projects munkalap üres. A rendszer nem tölti fel demóadatokkal.")
+        except Exception as exc:
+            st.session_state.connection_error = str(exc)
             u_df, p_df, l_df = normalize_schemas(None, None, None)
 
         st.session_state.users_df = u_df
@@ -333,12 +352,30 @@ def init_data_store():
         st.session_state.db_initialized = True
 
 def save_table(sheet_name, df):
-    st.session_state[f"{sheet_name}_df"] = df.copy()
     if st.session_state.get("gsheets_connected", False):
         try:
             st.session_state.gsheets_conn.update(worksheet=sheet_name, data=df)
-        except Exception as e:
-            st.toast(f"Google Sheets mentési figyelmeztetés ({sheet_name}): {e}", icon="⚠️")
+        except Exception as exc:
+            st.error(f"A mentés sikertelen ({sheet_name}): {exc}")
+            return False
+    else:
+        st.warning("Demó mód: a mentés csak az aktuális munkamenetben marad meg.")
+    st.session_state[f"{sheet_name}_df"] = df.copy()
+    return True
+
+def project_label(row):
+    return f"{row['work_number']} | {row['name']} | {row.get('company_or_activity', '')}"
+
+def can_manage_project(row):
+    return has_permission("project_edit") and (current_role == "Admin" or str(row.get("owner_email", "")).lower() == str(current_user["email"]).lower())
+
+def write_log(hours, pid, date_str, notes):
+    if not has_permission("time_log") or int(pid) not in get_user_accessible_projects(current_user["email"])["id"].tolist():
+        st.error("Ehhez a projekthez nincs rögzítési jogosultságod.")
+        return False
+    new_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
+    row = pd.DataFrame([{"id":new_id,"email":current_user["email"],"project_id":int(pid),"date":date_str,"hours":float(hours),"notes":notes}])
+    return save_table("logs",pd.concat([logs_df,row],ignore_index=True))
 
 # Szerepköralapú jogok és felhasználónkénti felülbírálások.
 PERMISSIONS = {
@@ -433,16 +470,7 @@ if not st.session_state.logged_in:
                         st.rerun()
                 st.error("Hibás e-mail cím vagy jelszó!")
         with t_pw:
-            pw_em = st.text_input("Regisztrált e-mail címed")
-            pw_new = st.text_input("Új jelszó", type="password")
-            if st.button("Jelszó mentése", use_container_width=True):
-                idx = users_df[users_df["email"].str.lower() == pw_em.lower()].index
-                if len(idx) > 0 and pw_new:
-                    users_df.loc[idx[0], "password"] = pw_new
-                    save_table("users", users_df)
-                    st.success("Jelszó frissítve!")
-                else:
-                    st.error("Ismeretlen e-mail vagy üres jelszó!")
+            st.warning("Jelszó-visszaállítás kizárólag hitelesített rendszergazdai folyamatban végezhető. Fordulj az üzemeltetőhöz.")
     st.stop()
 
 top_c1, top_c2, top_c3 = st.columns([2.2, 2.2, 1.4])
@@ -450,6 +478,9 @@ top_c1, top_c2, top_c3 = st.columns([2.2, 2.2, 1.4])
 with top_c1:
     user_options = users_df["email"].tolist()
     if st.session_state.user_email not in user_options:
+        if not user_options:
+            st.error("Nincs érvényes felhasználói e-mail cím a users munkalapon.")
+            st.stop()
         st.session_state.user_email = user_options[0]
 
     def format_user_option(em):
@@ -548,7 +579,7 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
     badge_txt = TYPE_LABELS.get(ptype, ptype)
     tags_html = "".join([f"<span class='proj-pill'>{t.strip()}</span>" for t in str(proj_row.get("tags", "")).split(",") if t.strip()])
 
-    if ptype == "Fixed":
+    if ptype == "Fixed" and str(proj_row.get("budget_mode", "limited")) != "unlimited":
         budget = float(proj_row["budget_hours"]) if float(proj_row["budget_hours"]) > 0 else 1.0
         auto_pct = (total_logged / budget) * 100.0
         manual_pct = float(proj_row.get("manual_completion", 0.0))
@@ -560,7 +591,7 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
         <div class="saas-card">
             <div class="saas-card-header">
                 <div>
-                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{proj_row['name']}</span>
+                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{html.escape(project_label(proj_row))}</span>
                     <span class="badge {badge_cls}" style="margin-left:6px;">{badge_txt}</span>
                 </div>
                 <div style="font-size:0.82rem; color:#475569;">Határidő: <b>{proj_row['deadline']}</b></div>
@@ -576,7 +607,8 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
         </div>
         """, unsafe_allow_html=True)
 
-    elif ptype == "Retainer":
+    elif ptype in ("Retainer", "Fixed"):
+
         curr_month = datetime.now().strftime("%Y-%m")
         m_logs = p_logs[p_logs["date"].str.startswith(curr_month)] if not p_logs.empty else pd.DataFrame()
         month_hours = m_logs["hours"].sum() if not m_logs.empty else 0.0
@@ -587,7 +619,7 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
         <div class="saas-card">
             <div class="saas-card-header">
                 <div>
-                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{proj_row['name']}</span>
+                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{html.escape(project_label(proj_row))}</span>
                     <span class="badge {badge_cls}" style="margin-left:6px;">♾️ {badge_txt}</span>
                 </div>
                 <div style="font-size:0.82rem; color:#6b21a8; font-weight:600;">Folyamatos megbízás</div>
@@ -609,7 +641,10 @@ if has_permission("team_view") or has_permission("project_create") or has_permis
 if any(has_permission(k) for k in ("users_manage", "permissions_manage", "admin_categories", "company_view")):
     main_tabs_labels.append("🏢 Vállalati Admin")
 
+if has_permission("project_create") or has_permission("project_edit"):
+    main_tabs_labels.insert(1, "📁 Projektkezelés")
 main_tabs = st.tabs(main_tabs_labels)
+
 
 # ==============================================================================
 # MODUL 1: DOLGOZÓI NÉZET
@@ -640,10 +675,12 @@ with main_tabs[0]:
 
     with view_tab1:
         proj_choices = my_accessible_projs["id"].tolist()
+        if not proj_choices:
+            st.warning("Nincs elérhető aktív projekt. Kérj projekt-hozzárendelést a vezetődtől.")
         def fmt_proj_label(pid):
             pr = my_accessible_projs[my_accessible_projs["id"] == pid].iloc[0]
             tag = "FIX" if pr["project_type"] == "Fixed" else ("RETAINER" if pr["project_type"] == "Retainer" else "ADMIN")
-            return f"[{tag}] {pr['name']}"
+            return f"[{tag}] {project_label(pr)}"
 
         st.markdown('<div class="quick-tap-box">', unsafe_allow_html=True)
         st.markdown("##### ⚡ Mobil Gyorsrögzítő (1 érintéssel a kiválasztott napra)")
@@ -658,7 +695,8 @@ with main_tabs[0]:
                 if b_cols[idx_q].button(btn_label, key=f"qbtn_{idx_q}", use_container_width=True, disabled=not has_permission("time_log")):
                     new_log_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
                     quick_entry = pd.DataFrame([{"id": new_log_id, "email": current_user["email"], "project_id": int(quick_pid), "date": sel_date_str, "hours": float(hrs_q), "notes": "📱 Mobil gyorsrögzítés"}])
-                    save_table("logs", pd.concat([logs_df, quick_entry], ignore_index=True))
+                    if not write_log(hrs_q, quick_pid, sel_date_str, "Mobil gyorsrögzítés"):
+                        st.stop()
                     st.toast(f"Rögzítve: {hrs_q} óra!", icon="✅")
                     st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -678,7 +716,8 @@ with main_tabs[0]:
                     else:
                         new_log_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
                         new_entry = pd.DataFrame([{"id": new_log_id, "email": current_user["email"], "project_id": int(sel_pid), "date": sel_date_str, "hours": float(parsed_hrs), "notes": note_txt.strip()}])
-                        save_table("logs", pd.concat([logs_df, new_entry], ignore_index=True))
+                        if not write_log(parsed_hrs, sel_pid, sel_date_str, note_txt.strip()):
+                            st.stop()
                         st.success(f"Rögzítve: {format_duration(parsed_hrs, st.session_state.time_format, daily_expected)}")
                         st.rerun()
 
@@ -698,14 +737,14 @@ with main_tabs[0]:
                         <div class="saas-card" style="padding:12px 16px; margin-bottom:8px; border-left: 4px solid {item['color']};">
                             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
                                 <div>
-                                    <span style="font-weight:700; color:#0f172a;">{item['name']}</span>
+                                    <span style="font-weight:700; color:#0f172a;">{html.escape(str(item['name']))}</span>
                                     <span class="badge {b_cls}" style="margin-left:6px;">{TYPE_LABELS.get(pt, pt)}</span>
                                 </div>
                                 <span style="font-weight:700; font-size:0.95rem; color:#1e293b;">
                                     {format_duration(item['hours'], st.session_state.time_format, daily_expected)}
                                 </span>
                             </div>
-                            <div style="font-size:0.82rem; color:#475569; margin-top:4px;">💬 {item['notes'] if item['notes'] else '<i>Nincs megjegyzés</i>'}</div>
+                            <div style="font-size:0.82rem; color:#475569; margin-top:4px;">💬 {html.escape(str(item['notes'])) if item['notes'] else '<i>Nincs megjegyzés</i>'}</div>
                         </div>
                         """, unsafe_allow_html=True)
                     with c2:
@@ -722,7 +761,7 @@ with main_tabs[0]:
 
         for _, proj in my_accessible_projs.iterrows():
             pid = proj["id"]
-            row_dict = {"Projekt ID": pid, "Kategória": TYPE_LABELS.get(proj["project_type"], proj["project_type"]), "Projekt / Tevékenység": proj["name"]}
+            row_dict = {"Projekt ID": pid, "Kategória": proj["group_name"], "Projekt / Tevékenység": project_label(proj)}
             row_total_hrs = 0.0
             for idx, d_iso in enumerate(week_dates):
                 col_label = f"{day_names_short[idx][:2]} ({d_iso[5:]})"
@@ -772,7 +811,8 @@ with main_tabs[0]:
                         next_id += 1
 
             updated_all_logs = pd.concat([remaining_logs, pd.DataFrame(new_grid_entries)], ignore_index=True)
-            save_table("logs", updated_all_logs)
+            if not save_table("logs", updated_all_logs):
+                st.stop()
             st.success("A heti mátrix adatai sikeresen szinkronizálva!")
             st.rerun()
 
@@ -837,6 +877,99 @@ with main_tabs[0]:
                     render_project_burn_card(pr, logs_df, st.session_state.time_format, daily_expected)
 
 # ==============================================================================
+# PROJEKTKEZELÉS – MUNKSZÁM, FŐCSOPORT, ÜGYFÉL / TEVÉKENYSÉG
+# ==============================================================================
+if "📁 Projektkezelés" in main_tabs_labels:
+    with main_tabs[main_tabs_labels.index("📁 Projektkezelés")]:
+        st.subheader("📁 Projektkezelés")
+        visible_projects = projects_df if current_role == "Admin" else projects_df[projects_df["owner_email"].astype(str).str.lower() == current_user["email"].lower()]
+        pg1, pg2, pg3 = st.tabs(["📋 Projektlista", "➕ Új projekt", "✏️ Módosítás / archiválás"])
+        with pg1:
+            query = st.text_input("Keresés munkaszám, projekt vagy ügyfél szerint", key="project_search").casefold()
+            groups = sorted(visible_projects["group_name"].dropna().unique().tolist())
+            chosen_group = st.selectbox("Főcsoport", ["Összes"] + groups, key="project_group_filter")
+            filtered = visible_projects.copy()
+            if chosen_group != "Összes":
+                filtered = filtered[filtered["group_name"] == chosen_group]
+            if query:
+                filtered = filtered[filtered.apply(lambda r: query in project_label(r).casefold(), axis=1)]
+            display = filtered[["work_number", "name", "company_or_activity", "group_name", "project_type", "budget_mode", "budget_hours", "owner_email", "status"]].copy()
+            display["Felhasznált óra"] = display.index.map(lambda i: float(logs_df.loc[logs_df["project_id"] == int(filtered.loc[i, "id"]), "hours"].sum()))
+            display["Fennmaradó óra"] = display.apply(lambda r: max(0.0, float(r["budget_hours"]) - r["Felhasznált óra"]) if r["budget_mode"] == "limited" else None, axis=1)
+            st.dataframe(display.rename(columns={"work_number":"Munkaszám", "name":"Projekt", "company_or_activity":"Ügyfél / tevékenység", "group_name":"Főcsoport", "project_type":"Típus", "budget_mode":"Keretmód", "budget_hours":"Órakeret", "owner_email":"Projektvezető", "status":"Státusz"}), hide_index=True, use_container_width=True)
+        with pg2:
+            if not has_permission("project_create"):
+                st.info("Nincs projektlétrehozási jogosultságod.")
+            else:
+                with st.form("new_structured_project"):
+                    pn = st.text_input("Munkaszám *", placeholder="TRAN2600")
+                    nm = st.text_input("Projekt neve *", placeholder="Transzferár")
+                    co = st.text_input("Cégnév / tevékenység *", placeholder="Hőgyészi Zrt. vagy Telefon")
+                    gr = st.text_input("Főcsoport *", value="Ügyfélprojektek – Transzferár")
+                    ty = st.selectbox("Típus", ["Fixed", "Retainer", "Admin"], format_func=lambda x: TYPE_LABELS[x])
+                    bm = st.selectbox("Órakeret kezelése", ["limited", "unlimited"], format_func=lambda x: "Fogyó órakeret" if x == "limited" else "Korlátlan / nem lejáró")
+                    bh = st.number_input("Órakeret (ha fogyó)", min_value=0.0, value=100.0, step=1.0)
+                    rt = st.number_input("Indikatív havi óraszám (opcionális)", min_value=0.0, value=0.0)
+                    ow = st.selectbox("Projektvezető", users_df["email"].tolist(), index=users_df["email"].tolist().index(current_user["email"]))
+                    assigned = st.multiselect("Hozzárendelt munkatársak", users_df["email"].tolist(), default=[current_user["email"]])
+                    all_staff = st.checkbox("Minden munkatárs rögzíthet rá", value=(ty == "Admin"))
+                    deadline = st.text_input("Határidő (YYYY-MM-DD vagy -)", value="-")
+                    description = st.text_area("Projektmegjegyzés")
+                    if st.form_submit_button("Projekt létrehozása", type="primary"):
+                        if not all([pn.strip(), nm.strip(), co.strip(), gr.strip()]):
+                            st.error("A csillaggal jelölt mezők kötelezők.")
+                        elif pn.strip().casefold() in projects_df["work_number"].astype(str).str.casefold().tolist():
+                            st.error("A munkaszám már létezik.")
+                        elif bm == "limited" and bh <= 0:
+                            st.error("Fogyó keretnél pozitív órakeretet adj meg.")
+                        else:
+                            pid = int(projects_df["id"].max()) + 1 if not projects_df.empty else 1
+                            new_row = {"id":pid,"work_number":pn.strip().upper(),"name":nm.strip(),"company_or_activity":co.strip(),"group_name":gr.strip(),"project_type":ty,"budget_mode":bm,"budget_hours":float(bh) if bm == "limited" else 0.0,"monthly_retainer_hours":float(rt),"manual_completion":0.0,"deadline":deadline.strip() or "-","status":"Aktív","color":TYPE_COLORS.get(ty,"#2563EB"),"owner_email":ow,"assigned_to":"*" if all_staff else ",".join(assigned),"tags":"","notes":description}
+                            if save_table("projects",pd.concat([projects_df,pd.DataFrame([new_row])],ignore_index=True)):
+                                st.success("Projekt létrehozva.")
+                                st.rerun()
+        with pg3:
+            if visible_projects.empty or not has_permission("project_edit"):
+                st.info("Nincs módosítható projekt.")
+            else:
+                ids = visible_projects["id"].tolist()
+                pid = st.selectbox("Szerkesztendő projekt", ids, format_func=lambda x: project_label(visible_projects[visible_projects["id"] == x].iloc[0]), key="structured_edit_id")
+                proj = visible_projects[visible_projects["id"] == pid].iloc[0]
+                with st.form("structured_edit_form"):
+                    en = st.text_input("Projektnév", value=str(proj["name"]))
+                    ec = st.text_input("Cégnév / tevékenység", value=str(proj["company_or_activity"]))
+                    eg = st.text_input("Főcsoport", value=str(proj["group_name"]))
+                    eb = st.selectbox("Keretmód", ["limited", "unlimited"], index=0 if proj["budget_mode"] == "limited" else 1)
+                    eh = st.number_input("Órakeret", min_value=0.0, value=float(proj["budget_hours"]))
+                    er = st.number_input("Indikatív havi óraszám", min_value=0.0, value=float(proj["monthly_retainer_hours"]))
+                    es = st.selectbox("Státusz", ["Aktív", "Lezárt", "Archivált"], index=["Aktív", "Lezárt", "Archivált"].index(proj["status"]) if proj["status"] in ["Aktív", "Lezárt", "Archivált"] else 0)
+                    ed = st.text_input("Határidő", value=str(proj["deadline"]))
+                    ea = st.multiselect("Munkatársak", users_df["email"].tolist(), default=[x for x in str(proj["assigned_to"]).split(",") if x in users_df["email"].tolist()])
+                    all_assigned = st.checkbox("Minden munkatárs hozzáfér", value=str(proj["assigned_to"]) == "*")
+                    memo = st.text_area("Projektmegjegyzés", value=str(proj.get("notes", "")))
+                    if st.form_submit_button("Módosítások mentése", type="primary"):
+                        if not can_manage_project(proj):
+                            st.error("Nincs jogosultságod a projekt módosítására.")
+                        elif not all([en.strip(), ec.strip(), eg.strip()]):
+                            st.error("A projekt, ügyfél és főcsoport nem lehet üres.")
+                        elif eb == "limited" and eh <= 0:
+                            st.error("A fogyó órakeret legyen pozitív.")
+                        else:
+                            updated = projects_df.copy()
+                            i = updated[updated["id"] == pid].index[0]
+                            for col,val in {"name":en.strip(),"company_or_activity":ec.strip(),"group_name":eg.strip(),"status":es,"deadline":ed.strip(),"notes":memo}.items():
+                                updated.at[i,col] = val
+                            if has_permission("project_budget"):
+                                updated.at[i,"budget_mode"] = eb
+                                updated.at[i,"budget_hours"] = float(eh) if eb == "limited" else 0.0
+                                updated.at[i,"monthly_retainer_hours"] = float(er)
+                            if has_permission("project_assign"):
+                                updated.at[i,"assigned_to"] = "*" if all_assigned else ",".join(ea)
+                            if save_table("projects",updated):
+                                st.success("Projekt módosítva.")
+                                st.rerun()
+
+# ==============================================================================
 # MODUL 2: PROJEKTGAZDA (PM) ÉS CSAPAT IRÁNYÍTÓPULT (RBAC >= 2)
 # ==============================================================================
 if "📂 Projektgazda & Csapat" in main_tabs_labels:
@@ -899,57 +1032,7 @@ if "📂 Projektgazda & Csapat" in main_tabs_labels:
         with pm_sub2:
             pm_c1, pm_c2 = st.columns([1.15, 1.85])
             with pm_c1:
-                st.markdown("#### ➕ Projekt Létrehozása / Szerkesztése")
-                edit_mode = st.radio("Művelet:", ["Új projekt indítása", "Meglévő módosítása"], horizontal=True)
-                if edit_mode == "Új projekt indítása":
-                    with st.form("pm_create_proj_form"):
-                        p_name = st.text_input("Projekt megnevezése:")
-                        p_type = st.selectbox("Projekttípus:", ["Fixed", "Retainer", "Admin"], format_func=lambda x: TYPE_LABELS[x])
-                        col_b1, col_b2 = st.columns(2)
-                        with col_b1:
-                            p_budget = st.number_input("Fix órakeret (Fixed):", min_value=0.0, value=80.0, step=5.0)
-                        with col_b2:
-                            p_retainer = st.number_input("Havi indikatív óra (Retainer):", min_value=0.0, value=0.0, step=5.0)
-                        p_deadline = st.text_input("Határidő (YYYY-MM-DD vagy '-'):", value="2026-12-31")
-                        p_tags = st.text_input("Címkék (vesszővel elválasztva):", value="Ügyfél,Q4")
-                        p_color = st.color_picker("Színkód:", value="#2563EB")
-                        assigned_emps = st.multiselect("Csapattagok:", options=users_df["email"].tolist(), default=[current_user["email"]])
-                        if st.form_submit_button("🚀 Projekt létrehozása", use_container_width=True, type="primary", disabled=not has_permission("project_create")):
-                            if not p_name.strip():
-                                st.error("A projekt neve kötelező!")
-                            else:
-                                new_pid = int(projects_df["id"].max() + 1) if not projects_df.empty else 1
-                                assigned_str = "*" if p_type == "Admin" else ",".join(assigned_emps)
-                                new_p_row = pd.DataFrame([{"id": new_pid, "name": p_name.strip(), "project_type": p_type, "budget_hours": float(p_budget) if p_type == "Fixed" else 0.0, "monthly_retainer_hours": float(p_retainer) if p_type == "Retainer" else 0.0, "manual_completion": 0.0, "deadline": p_deadline.strip() if p_type == "Fixed" else "-", "status": "Aktív", "color": p_color, "owner_email": current_user["email"], "assigned_to": assigned_str, "tags": p_tags.strip()}])
-                                save_table("projects", pd.concat([projects_df, new_p_row], ignore_index=True))
-                                st.success(f"'{p_name}' létrehozva!")
-                                st.rerun()
-                elif projects_df.empty:
-                    st.info("Nincs szerkeszthető projekt. Hozz létre előbb egy projektet.")
-                else:
-                    sel_edit_pid = st.selectbox("Szerkesztendő projekt:", options=(projects_df if current_role == "Admin" else projects_df[projects_df["owner_email"] == current_user["email"]])["id"].tolist(), format_func=lambda i: f"#{i} - {projects_df[projects_df['id'] == i].iloc[0]['name']}")
-                    curr_p = projects_df[projects_df["id"] == sel_edit_pid].iloc[0]
-                    with st.form("pm_edit_proj_form"):
-                        e_name = st.text_input("Projekt neve:", value=curr_p["name"])
-                        e_status = st.selectbox("Státusz:", ["Aktív", "Archivált"], index=0 if curr_p["status"] == "Aktív" else 1)
-                        e_budget = st.number_input("Fix órakeret:", min_value=0.0, value=float(curr_p["budget_hours"]), step=5.0)
-                        e_manual_pct = st.slider("🛠️ Szakmai készültségi fok felülbírálata (0% = automatikus):", min_value=0, max_value=100, value=int(float(curr_p.get("manual_completion", 0.0))))
-                        e_tags = st.text_input("Címkék:", value=str(curr_p.get("tags", "")))
-                        curr_assigned = [x.strip() for x in str(curr_p["assigned_to"]).split(",") if x.strip() in users_df["email"].values]
-                        e_assigned = st.multiselect("Csapattagok:", options=users_df["email"].tolist(), default=curr_assigned)
-                        if st.form_submit_button("💾 Módosítások mentése", use_container_width=True, type="primary", disabled=not has_permission("project_edit")):
-                            idx_p = projects_df[projects_df["id"] == sel_edit_pid].index[0]
-                            projects_df.loc[idx_p, "name"] = e_name.strip()
-                            projects_df.loc[idx_p, "status"] = e_status
-                            if has_permission("project_budget"):
-                                projects_df.loc[idx_p, "budget_hours"] = float(e_budget)
-                            projects_df.loc[idx_p, "manual_completion"] = float(e_manual_pct)
-                            projects_df.loc[idx_p, "tags"] = e_tags.strip()
-                            if curr_p["project_type"] != "Admin" and has_permission("project_assign"):
-                                projects_df.loc[idx_p, "assigned_to"] = ",".join(e_assigned)
-                            save_table("projects", projects_df)
-                            st.success("Projekt adatai frissítve!")
-                            st.rerun()
+                st.info("A projektek létrehozása és módosítása a külön 📁 Projektkezelés fülön érhető el.")
 
             with pm_c2:
                 st.markdown("#### 📊 Projekt Portfólió Készültségi & Burn Monitor")
@@ -994,7 +1077,7 @@ if "🏢 Vállalati Admin" in main_tabs_labels:
                     if st.form_submit_button("Kategória hozzáadása", use_container_width=True, type="primary", disabled=not has_permission("admin_categories")):
                         if cat_name.strip():
                             new_cid = int(projects_df["id"].max() + 1) if not projects_df.empty else 1
-                            new_cat = pd.DataFrame([{"id": new_cid, "name": cat_name.strip(), "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#64748B", "owner_email": current_user["email"], "assigned_to": "*", "tags": cat_tags}])
+                            new_cat = pd.DataFrame([{"id": new_cid, "name": cat_name.strip(), "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#64748B", "owner_email": current_user["email"], "assigned_to": "*", "tags": cat_tags, "work_number":f"BEL{new_cid:04d}", "company_or_activity":cat_name.strip(), "group_name":"Belső / adminisztráció", "budget_mode":"unlimited", "notes":""}])
                             save_table("projects", pd.concat([projects_df, new_cat], ignore_index=True))
                             st.success("Globális admin kategória létrehozva!")
                             st.rerun()
@@ -1022,7 +1105,8 @@ if "🏢 Vállalati Admin" in main_tabs_labels:
                             else:
                                 new_u_row = pd.DataFrame([{"email": u_em_in.strip(), "password": "123", "name": u_nm_in.strip(), "role": u_rl_in, "title": u_ti_in.strip(), "department": u_dp_in.strip(), "weekly_capacity": int(u_cp_in)}])
                                 users_df = pd.concat([users_df, new_u_row], ignore_index=True)
-                            save_table("users", users_df)
+                            if not save_table("users", users_df):
+                                st.stop()
                             st.success("Felhasználói adatok mentve!")
                             st.rerun()
             with uc2:
@@ -1032,9 +1116,9 @@ if "🏢 Vállalati Admin" in main_tabs_labels:
         with adm_tab3:
             st.markdown("#### 📊 Cégszintű Controlling Adattábla és Export")
             if not logs_df.empty:
-                export_df = pd.merge(logs_df, projects_df[["id", "name", "project_type", "budget_hours"]], left_on="project_id", right_on="id", suffixes=("_log", "_proj"))
+                export_df = pd.merge(logs_df, projects_df[["id", "name", "work_number", "company_or_activity", "group_name", "project_type", "budget_hours"]], left_on="project_id", right_on="id", suffixes=("_log", "_proj"))
                 export_df = pd.merge(export_df, users_df[["email", "name", "department", "role"]], on="email", how="left", suffixes=("_proj", "_user"))
-                st.dataframe(export_df[["date", "name_user", "department", "name_proj", "project_type", "hours", "notes"]], use_container_width=True, hide_index=True)
+                st.dataframe(export_df[["date", "name_user", "department", "work_number", "name_proj", "company_or_activity", "group_name", "project_type", "hours", "notes"]], use_container_width=True, hide_index=True)
                 csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button("📥 Teljes Vállalati Munkaidő Riport Letöltése (CSV / Excel)", data=csv_bytes, file_name=f"chronos_enterprise_riport_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", type="primary", use_container_width=True)
 
