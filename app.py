@@ -340,6 +340,65 @@ def save_table(sheet_name, df):
         except Exception as e:
             st.toast(f"Google Sheets mentési figyelmeztetés ({sheet_name}): {e}", icon="⚠️")
 
+# Szerepköralapú jogok és felhasználónkénti felülbírálások.
+PERMISSIONS = {
+    "project_create": "Projekt létrehozása",
+    "project_edit": "Projekt módosítása",
+    "project_archive": "Projekt archiválása",
+    "project_assign": "Projekt delegálása / csapattagok",
+    "project_budget": "Projekt órakeretének módosítása",
+    "users_manage": "Munkatársak felvétele / módosítása",
+    "users_deactivate": "Munkatárs deaktiválása",
+    "time_log": "Saját munkaidő rögzítése",
+    "time_delete": "Saját munkaidő törlése",
+    "time_grid": "Heti mátrix szerkesztése",
+    "team_view": "Csapatriportok megtekintése",
+    "company_view": "Vállalati riportok megtekintése",
+    "admin_categories": "Admin kategóriák kezelése",
+    "permissions_manage": "Jogosultságok kezelése",
+}
+ROLE_DEFAULTS = {
+    "Dolgozó": {"time_log", "time_delete", "time_grid"},
+    "Projektgazda": {"time_log", "time_delete", "time_grid", "project_create", "project_edit", "project_archive", "project_assign", "project_budget", "team_view"},
+    "Admin": set(PERMISSIONS),
+}
+
+def load_permission_rules():
+    if "permission_rules" not in st.session_state:
+        st.session_state.permission_rules = pd.DataFrame(columns=["scope", "subject", "permission", "allowed"])
+        if st.session_state.get("gsheets_connected"):
+            try:
+                data = st.session_state.gsheets_conn.read(worksheet="permissions", ttl=0).dropna(how="all")
+                if set(["scope", "subject", "permission", "allowed"]).issubset(data.columns):
+                    st.session_state.permission_rules = data
+            except Exception:
+                pass  # Az opcionális munkalap még nem létezik.
+    return st.session_state.permission_rules
+
+def has_permission(key, email=None, role=None):
+    email = str(email or st.session_state.user_email).lower()
+    if role is None:
+        match = st.session_state.users_df[st.session_state.users_df["email"].str.lower() == email]
+        role = str(match.iloc[0]["role"]) if not match.empty else "Dolgozó"
+    if key not in PERMISSIONS:
+        return False
+    rules = load_permission_rules()
+    for scope, subject in [("user", email), ("role", role)]:
+        matches = rules[(rules["scope"] == scope) & (rules["subject"].astype(str).str.lower() == subject.lower()) & (rules["permission"] == key)]
+        if not matches.empty:
+            return str(matches.iloc[-1]["allowed"]).strip().lower() in ("true", "1", "yes", "igen")
+    return key in ROLE_DEFAULTS.get(role, set())
+
+def set_permission_rules(scope, subject, values):
+    old = load_permission_rules()
+    old = old[~((old["scope"] == scope) & (old["subject"] == subject))].copy()
+    new = pd.DataFrame([{"scope": scope, "subject": subject, "permission": key, "allowed": bool(allowed)} for key, allowed in values.items()])
+    result = pd.concat([old, new], ignore_index=True)
+    # Ne legyen látszólag sikeres mentés, ha a központi adattár nem írható.
+    if st.session_state.get("gsheets_connected"):
+        st.session_state.gsheets_conn.update(worksheet="permissions", data=result)
+    st.session_state.permission_rules = result
+
 init_data_store()
 
 # ==============================================================================
@@ -397,15 +456,8 @@ with top_c1:
         row = users_df[users_df["email"] == em].iloc[0]
         return f"🎭 {row['name']} — [{row['role'].upper()}]"
 
-    selected_user_email = st.selectbox(
-        "🔄 Aktív Felhasználó / Szerepkör Váltó:",
-        options=user_options,
-        index=user_options.index(st.session_state.user_email),
-        format_func=format_user_option
-    )
-    if selected_user_email != st.session_state.user_email:
-        st.session_state.user_email = selected_user_email
-        st.rerun()
+    # A demó szerepkörváltó nem használható jogosultságemelésre.
+    st.caption("Bejelentkezve: " + format_user_option(st.session_state.user_email))
 
 current_user = users_df[users_df["email"] == st.session_state.user_email].iloc[0]
 current_role = current_user["role"]
@@ -552,9 +604,9 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
 # FŐ NAVIGÁCIÓS FÜLEK
 # ==============================================================================
 main_tabs_labels = ["⏱️ Saját Munkaidő (Dolgozói nézet)"]
-if current_role_level >= 2:
+if has_permission("team_view") or has_permission("project_create") or has_permission("project_edit"):
     main_tabs_labels.append("📂 Projektgazda & Csapat")
-if current_role_level >= 3:
+if any(has_permission(k) for k in ("users_manage", "permissions_manage", "admin_categories", "company_view")):
     main_tabs_labels.append("🏢 Vállalati Admin")
 
 main_tabs = st.tabs(main_tabs_labels)
@@ -603,7 +655,7 @@ with main_tabs[0]:
             b_cols = st.columns(4)
             quick_presets = [("➕ 0.5 ó", 0.5), ("➕ 1 óra", 1.0), ("➕ 2 óra", 2.0), ("✅ 4 óra", 4.0)]
             for idx_q, (btn_label, hrs_q) in enumerate(quick_presets):
-                if b_cols[idx_q].button(btn_label, key=f"qbtn_{idx_q}", use_container_width=True):
+                if b_cols[idx_q].button(btn_label, key=f"qbtn_{idx_q}", use_container_width=True, disabled=not has_permission("time_log")):
                     new_log_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
                     quick_entry = pd.DataFrame([{"id": new_log_id, "email": current_user["email"], "project_id": int(quick_pid), "date": sel_date_str, "hours": float(hrs_q), "notes": "📱 Mobil gyorsrögzítés"}])
                     save_table("logs", pd.concat([logs_df, quick_entry], ignore_index=True))
@@ -619,7 +671,7 @@ with main_tabs[0]:
                 sel_pid = st.selectbox("Projekt / Admin tevékenység:", options=proj_choices, format_func=fmt_proj_label)
                 raw_time_str = st.text_input("Időtartam (pl. 2.5 vagy 02:30 vagy 25%):", value="1.5")
                 note_txt = st.text_input("Megjegyzés / Elvégzett feladat:", placeholder="Pl. Ügyfélegyeztetés, elemzés...")
-                if st.form_submit_button("💾 Munkaidő mentése", use_container_width=True, type="primary"):
+                if st.form_submit_button("💾 Munkaidő mentése", use_container_width=True, type="primary", disabled=not has_permission("time_log")):
                     parsed_hrs = parse_duration_input(raw_time_str, daily_expected)
                     if parsed_hrs is None or parsed_hrs <= 0:
                         st.error("Érvénytelen időformátum! Használj pl. '2.5', '02:30' vagy '25%' értéket.")
@@ -657,7 +709,7 @@ with main_tabs[0]:
                         </div>
                         """, unsafe_allow_html=True)
                     with c2:
-                        if st.button("🗑️ Törlés", key=f"del_log_{item['id_log']}", use_container_width=True):
+                        if st.button("🗑️ Törlés", key=f"del_log_{item['id_log']}", use_container_width=True, disabled=not has_permission("time_delete")):
                             save_table("logs", logs_df[logs_df["id"] != item["id_log"]])
                             st.rerun()
 
@@ -698,7 +750,7 @@ with main_tabs[0]:
             color_hex = "#16a34a" if d_tot == daily_expected else ("#d97706" if d_tot > 0 else "#94a3b8")
             summary_cols[idx + 1].markdown(f"<span style='color:{color_hex}; font-weight:700;'>{day_names_short[idx][:2]}: {format_duration(d_tot, st.session_state.time_format, daily_expected)}</span>", unsafe_allow_html=True)
 
-        if st.button("💾 Heti mátrix módosításainak mentése", type="primary", use_container_width=True):
+        if st.button("💾 Heti mátrix módosításainak mentése", type="primary", use_container_width=True, disabled=not has_permission("time_grid")):
             remaining_logs = logs_df[~((logs_df["email"] == current_user["email"]) & (logs_df["date"].isin(week_dates)))].copy()
             new_grid_entries = []
             next_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
@@ -787,8 +839,8 @@ with main_tabs[0]:
 # ==============================================================================
 # MODUL 2: PROJEKTGAZDA (PM) ÉS CSAPAT IRÁNYÍTÓPULT (RBAC >= 2)
 # ==============================================================================
-if current_role_level >= 2:
-    with main_tabs[1]:
+if "📂 Projektgazda & Csapat" in main_tabs_labels:
+    with main_tabs[main_tabs_labels.index("📂 Projektgazda & Csapat")]:
         pm_sub1, pm_sub2, pm_sub3 = st.tabs(["👥 Csapat Profilok (Utilization)", "📂 Projektek & Készültség", "📊 Csapat Analitika"])
 
         with pm_sub1:
@@ -862,7 +914,7 @@ if current_role_level >= 2:
                         p_tags = st.text_input("Címkék (vesszővel elválasztva):", value="Ügyfél,Q4")
                         p_color = st.color_picker("Színkód:", value="#2563EB")
                         assigned_emps = st.multiselect("Csapattagok:", options=users_df["email"].tolist(), default=[current_user["email"]])
-                        if st.form_submit_button("🚀 Projekt létrehozása", use_container_width=True, type="primary"):
+                        if st.form_submit_button("🚀 Projekt létrehozása", use_container_width=True, type="primary", disabled=not has_permission("project_create")):
                             if not p_name.strip():
                                 st.error("A projekt neve kötelező!")
                             else:
@@ -875,7 +927,7 @@ if current_role_level >= 2:
                 elif projects_df.empty:
                     st.info("Nincs szerkeszthető projekt. Hozz létre előbb egy projektet.")
                 else:
-                    sel_edit_pid = st.selectbox("Szerkesztendő projekt:", options=projects_df["id"].tolist(), format_func=lambda i: f"#{i} - {projects_df[projects_df['id'] == i].iloc[0]['name']}")
+                    sel_edit_pid = st.selectbox("Szerkesztendő projekt:", options=(projects_df if current_role == "Admin" else projects_df[projects_df["owner_email"] == current_user["email"]])["id"].tolist(), format_func=lambda i: f"#{i} - {projects_df[projects_df['id'] == i].iloc[0]['name']}")
                     curr_p = projects_df[projects_df["id"] == sel_edit_pid].iloc[0]
                     with st.form("pm_edit_proj_form"):
                         e_name = st.text_input("Projekt neve:", value=curr_p["name"])
@@ -885,14 +937,15 @@ if current_role_level >= 2:
                         e_tags = st.text_input("Címkék:", value=str(curr_p.get("tags", "")))
                         curr_assigned = [x.strip() for x in str(curr_p["assigned_to"]).split(",") if x.strip() in users_df["email"].values]
                         e_assigned = st.multiselect("Csapattagok:", options=users_df["email"].tolist(), default=curr_assigned)
-                        if st.form_submit_button("💾 Módosítások mentése", use_container_width=True, type="primary"):
+                        if st.form_submit_button("💾 Módosítások mentése", use_container_width=True, type="primary", disabled=not has_permission("project_edit")):
                             idx_p = projects_df[projects_df["id"] == sel_edit_pid].index[0]
                             projects_df.loc[idx_p, "name"] = e_name.strip()
                             projects_df.loc[idx_p, "status"] = e_status
-                            projects_df.loc[idx_p, "budget_hours"] = float(e_budget)
+                            if has_permission("project_budget"):
+                                projects_df.loc[idx_p, "budget_hours"] = float(e_budget)
                             projects_df.loc[idx_p, "manual_completion"] = float(e_manual_pct)
                             projects_df.loc[idx_p, "tags"] = e_tags.strip()
-                            if curr_p["project_type"] != "Admin":
+                            if curr_p["project_type"] != "Admin" and has_permission("project_assign"):
                                 projects_df.loc[idx_p, "assigned_to"] = ",".join(e_assigned)
                             save_table("projects", projects_df)
                             st.success("Projekt adatai frissítve!")
@@ -927,9 +980,9 @@ if current_role_level >= 2:
 # ==============================================================================
 # MODUL 3: VÁLLALATI ADMIN & GLOBÁLIS BEÁLLÍTÁSOK (RBAC == 3)
 # ==============================================================================
-if current_role_level >= 3:
-    with main_tabs[2]:
-        adm_tab1, adm_tab2, adm_tab3 = st.tabs(["🏛️ Globális Admin Kategóriák", "🔐 Felhasználók & Jogosultságok", "📥 Cégszintű Controlling & Export"])
+if "🏢 Vállalati Admin" in main_tabs_labels:
+    with main_tabs[main_tabs_labels.index("🏢 Vállalati Admin")]:
+        adm_tab1, adm_tab2, adm_tab3, adm_tab4 = st.tabs(["🏛️ Globális Admin Kategóriák", "🔐 Felhasználók & Jogosultságok", "📥 Cégszintű Controlling & Export", "🛡️ Jogosultságkezelés"])
 
         with adm_tab1:
             ac1, ac2 = st.columns([1, 1.5])
@@ -938,7 +991,7 @@ if current_role_level >= 3:
                 with st.form("admin_cat_form"):
                     cat_name = st.text_input("Kategória neve (pl. Betegszabadság, Konferencia):")
                     cat_tags = st.text_input("Címkék:", value="Belső,Nem elszámolható")
-                    if st.form_submit_button("Kategória hozzáadása", use_container_width=True, type="primary"):
+                    if st.form_submit_button("Kategória hozzáadása", use_container_width=True, type="primary", disabled=not has_permission("admin_categories")):
                         if cat_name.strip():
                             new_cid = int(projects_df["id"].max() + 1) if not projects_df.empty else 1
                             new_cat = pd.DataFrame([{"id": new_cid, "name": cat_name.strip(), "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#64748B", "owner_email": current_user["email"], "assigned_to": "*", "tags": cat_tags}])
@@ -960,7 +1013,7 @@ if current_role_level >= 3:
                     u_ti_in = st.text_input("Beosztás:", value="Tanácsadó")
                     u_dp_in = st.text_input("Csapat / Részleg:", value="Tanácsadás & Audit")
                     u_cp_in = st.number_input("Heti elvárt óraszám:", min_value=8, max_value=60, value=40, step=4)
-                    if st.form_submit_button("💾 Mentés / Frissítés", use_container_width=True, type="primary"):
+                    if st.form_submit_button("💾 Mentés / Frissítés", use_container_width=True, type="primary", disabled=not has_permission("users_manage")):
                         if u_em_in.strip():
                             existing_idx = users_df[users_df["email"].str.lower() == u_em_in.strip().lower()].index
                             if len(existing_idx) > 0:
@@ -984,3 +1037,30 @@ if current_role_level >= 3:
                 st.dataframe(export_df[["date", "name_user", "department", "name_proj", "project_type", "hours", "notes"]], use_container_width=True, hide_index=True)
                 csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button("📥 Teljes Vállalati Munkaidő Riport Letöltése (CSV / Excel)", data=csv_bytes, file_name=f"chronos_enterprise_riport_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv", type="primary", use_container_width=True)
+
+        with adm_tab4:
+            st.subheader("🛡️ Jogosultságkezelés")
+            if not has_permission("permissions_manage"):
+                st.error("Ehhez a funkcióhoz nincs jogosultságod.")
+            else:
+                st.caption("A felhasználói felülbírálás elsőbbséget élvez a szerepkör beállításaival szemben. A módosítások a permissions munkalapra kerülnek, ha a Google Sheets kapcsolat aktív.")
+                scope_label = st.radio("Beállítás szintje", ["Szerepkör", "Felhasználó"], horizontal=True)
+                scope = "role" if scope_label == "Szerepkör" else "user"
+                options = list(ROLE_DEFAULTS) if scope == "role" else users_df["email"].tolist()
+                subject = st.selectbox("Kiválasztott szerepkör / felhasználó", options, key="permission_subject")
+                with st.form(f"permission_editor_{scope}_{subject}"):
+                    selected = {}
+                    for key, title in PERMISSIONS.items():
+                        selected[key] = st.checkbox(title, value=has_permission(key, email=subject if scope == "user" else "", role=subject if scope == "role" else None), key=f"perm_{scope}_{subject}_{key}")
+                    if st.form_submit_button("💾 Jogosultságok mentése", type="primary"):
+                        if not has_permission("permissions_manage"):
+                            st.error("Hozzáférés megtagadva.")
+                        elif scope == "role" and subject == "Admin" and not selected["permissions_manage"]:
+                            st.error("Az Admin szerepkör jogosultságkezelési joga nem kapcsolható ki itt.")
+                        else:
+                            try:
+                                set_permission_rules(scope, subject, selected)
+                                st.success("Jogosultságok mentve.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"A jogosultságok mentése sikertelen: {exc}")
