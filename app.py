@@ -744,7 +744,7 @@ with main_tabs[0]:
                                     {format_duration(item['hours'], st.session_state.time_format, daily_expected)}
                                 </span>
                             </div>
-                            <div style="font-size:0.82rem; color:#475569; margin-top:4px;">💬 {html.escape(str(item['notes'])) if item['notes'] else '<i>Nincs megjegyzés</i>'}</div>
+                           <div style="font-size:0.82rem; color:#475569; margin-top:4px;">💬 {html.escape(str(item['notes_log'])) if pd.notna(item['notes_log']) and str(item['notes_log']).strip() else '<i>Nincs megjegyzés</i>'}</div>
                         </div>
                         """, unsafe_allow_html=True)
                     with c2:
