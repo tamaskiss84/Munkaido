@@ -3,35 +3,32 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import re
 
 # ==============================================================================
-# 0. KONFIGURÁCIÓ ÉS ENTERPRISE UI/UX STYLING (CSS)
+# 0. KONFIGURÁCIÓ, PWA META-TAGEK ÉS RESZPONZÍV MOBIL / ENTERPRISE CSS
 # ==============================================================================
 st.set_page_config(
-    page_title="Chronos Enterprise | Munkaidő & Projekt Controlling",
+    page_title="Chronos Enterprise | Munkaidő App",
     page_icon="⏱️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"  # Mobilon ne takarja ki a képernyőt induláskor
 )
-# ==============================================================================
-# MOBIL APP (PWA) META-TAGEK ÉS RESZPONZÍV ÉRINTŐKÉPERNYŐS CSS
-# ==============================================================================
+
 st.markdown("""
-<!-- PWA / Mobil App viselkedés iOS és Android rendszeren -->
+<!-- PWA / Kezdőképernyős Web-App meta-tagek iOS (Safari) és Android (Chrome) számára -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Chronos App">
+<meta name="apple-mobile-web-app-title" content="Chronos">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#2563EB">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 <style>
-    /* Natív app érzet: Streamlit felső díszcsík és lábléc finomítása */
+    /* Natív app érzet: Streamlit felesleges díszítőelemeinek elrejtése */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {background: transparent !important;}
 
     /* Érintőbarát (Touch-friendly) gombok és beviteli mezők (min. 48px magasság) */
     .stButton > button {
@@ -39,62 +36,24 @@ st.markdown("""
         border-radius: 10px !important;
         font-weight: 600 !important;
         font-size: 0.95rem !important;
+        transition: transform 0.1s ease, box-shadow 0.15s ease !important;
     }
-    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stDateInput input {
+    .stButton > button:active {
+        transform: scale(0.98) !important;
+    }
+    .stTextInput input, .stSelectbox div[data-baseweb="select"], .stDateInput input, .stNumberInput input {
         min-height: 45px !important;
         border-radius: 8px !important;
     }
 
-    /* MOBIL NÉZET (768px alatti kijelzők: Okostelefonok) */
-    @media (max-width: 768px) {
-        /* Fő konténer margóinak csökkentése, hogy több hely maradjon a tartalomnak */
-        .block-container {
-            padding-top: 1.5rem !important;
-            padding-left: 0.75rem !important;
-            padding-right: 0.75rem !important;
-            padding-bottom: 4rem !important;
-        }
-        /* Oszlopok automatikus egymás alá tördelése mobilon */
-        div[data-testid="stHorizontalBlock"] {
-            flex-direction: column !important;
-            gap: 0.5rem !important;
-        }
-        div[data-testid="column"] {
-            width: 100% !important;
-            flex: 1 1 100% !important;
-            min-width: 100% !important;
-        }
-        /* Vízszintesen görgethető fülek (Tabs) ujjhúzással */
-        div[data-baseweb="tab-list"] {
-            overflow-x: auto !important;
-            white-space: nowrap !important;
-            flex-wrap: nowrap !important;
-            padding-bottom: 4px !important;
-            -webkit-overflow-scrolling: touch;
-        }
-        /* Kártyák kompaktabb térköze mobilon */
-        .saas-card {
-            padding: 14px !important;
-            margin-bottom: 10px !important;
-        }
-        .saas-card-header {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 6px !important;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
-st.markdown("""
-<style>
-    /* Alap kártyák és konténerek */
+    /* Enterprise SaaS Kártyák */
     .saas-card {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 12px;
         padding: 18px 20px;
         box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
-        margin-bottom: 16px;
+        margin-bottom: 14px;
     }
     .saas-card-header {
         display: flex;
@@ -102,6 +61,16 @@ st.markdown("""
         align-items: center;
         margin-bottom: 10px;
     }
+
+    /* Gyorsrögzítő (1-Tap Mobile) doboz */
+    .quick-tap-box {
+        background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
+        border: 1px solid #bfdbfe;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 18px;
+    }
+
     /* Szerepkör és Projekttípus Jelvények (Pills/Badges) */
     .badge {
         display: inline-block;
@@ -166,12 +135,12 @@ st.markdown("""
     .timeblock-container {
         display: flex;
         width: 100%;
-        height: 34px;
+        height: 36px;
         background-color: #f1f5f9;
         border-radius: 8px;
         overflow: hidden;
         border: 1px solid #cbd5e1;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
     }
     .timeblock-segment {
         display: flex;
@@ -185,14 +154,50 @@ st.markdown("""
         text-overflow: ellipsis;
         padding: 0 6px;
     }
+
+    /* MOBIL RESZPONZÍV SZABÁLYOK (Okostelefonok: 768px alatt) */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 2.2rem !important;
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+            padding-bottom: 4rem !important;
+        }
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+            gap: 0.5rem !important;
+        }
+        div[data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+        /* Ujjhúzással vízszintesen görgethető navigációs fülek */
+        div[data-baseweb="tab-list"] {
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            flex-wrap: nowrap !important;
+            padding-bottom: 4px !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        .saas-card {
+            padding: 14px !important;
+            margin-bottom: 10px !important;
+        }
+        .saas-card-header {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 6px !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Színhierarchia konstansok
+# Színhierarchia és Szerepkör konstansok
 TYPE_COLORS = {
-    "Fixed": "#2563EB",     # Enterprise Kék
-    "Retainer": "#7C3AED",  # Átalánydíjas Lila/Türkiz
-    "Admin": "#64748B"      # Palaszürke
+    "Fixed": "#2563EB",     # Normál projekt: Kék
+    "Retainer": "#7C3AED",  # Átalánydíjas: Lila
+    "Admin": "#64748B"      # Adminisztratív: Palaszürke
 }
 
 TYPE_LABELS = {
@@ -237,17 +242,14 @@ def parse_duration_input(val_str, daily_target=8.0):
         return 0.0
 
     try:
-        # 1. Százalékos formátum (pl. 31.25% vagy 50 %)
         if s.endswith("%"):
             pct_val = float(s[:-1].replace(",", ".").strip())
             return round((pct_val / 100.0) * daily_target, 2)
-        # 2. Óra:Perc formátum (pl. 02:30 vagy 2:15)
         if ":" in s:
             parts = s.split(":")
             hrs = float(parts[0].strip() or 0)
             mins = float(parts[1].strip() or 0)
             return round(hrs + (mins / 60.0), 2)
-        # 3. Tizedes óra (pl. 2.5 vagy 2,5)
         clean_s = re.sub(r"[^\d.,-]", "", s).replace(",", ".")
         return round(max(0.0, float(clean_s)), 2) if clean_s else 0.0
     except Exception:
@@ -265,56 +267,52 @@ def get_seed_data():
 
     users = pd.DataFrame([
         {"email": "kiss.tamas@ceg.hu", "password": "123", "name": "Kiss Tamás", "role": "Admin", "title": "Ügyvezető Igazgató", "department": "Menedzsment", "weekly_capacity": 40},
-        {"email": "nagy.eszter@ceg.hu", "password": "123", "name": "Nagy Eszter", "role": "Projektgazda", "title": "Senior Projektmenedzser", "department": "Digitális Üzletág", "weekly_capacity": 40},
-        {"email": "kovacs.dori@ceg.hu", "password": "123", "name": "Kovács Dóra", "role": "Dolgozó", "title": "Full-Stack Fejlesztő", "department": "Fejlesztés", "weekly_capacity": 40},
-        {"email": "szabo.bence@ceg.hu", "password": "123", "name": "Szabó Bence", "role": "Dolgozó", "title": "UI/UX Designer", "department": "Design Csapat", "weekly_capacity": 40},
+        {"email": "nagy.eszter@ceg.hu", "password": "123", "name": "Nagy Eszter", "role": "Projektgazda", "title": "Senior Projektmenedzser", "department": "Tanácsadás & Audit", "weekly_capacity": 40},
+        {"email": "kovacs.dori@ceg.hu", "password": "123", "name": "Kovács Dóra", "role": "Dolgozó", "title": "Szenior Tanácsadó", "department": "Tanácsadás & Audit", "weekly_capacity": 40},
+        {"email": "szabo.bence@ceg.hu", "password": "123", "name": "Szabó Bence", "role": "Dolgozó", "title": "Adatelemző & Fejlesztő", "department": "Digitális Üzletág", "weekly_capacity": 40},
         {"email": "varga.mate@ceg.hu", "password": "123", "name": "Varga Máté", "role": "Dolgozó", "title": "Rendszermérnök", "department": "Infrastruktúra", "weekly_capacity": 32},
     ])
 
     projects = pd.DataFrame([
         # 1. Fix keretes projektek
-        {"id": 1, "name": "ERP Rendszer Migráció", "project_type": "Fixed", "budget_hours": 120.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "2026-12-15", "status": "Aktív", "color": "#2563EB", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,varga.mate@ceg.hu,nagy.eszter@ceg.hu", "tags": "Backend,Kritikus,Q4"},
-        {"id": 2, "name": "Mobilbanki App UI Redesign", "project_type": "Fixed", "budget_hours": 60.0, "monthly_retainer_hours": 0.0, "manual_completion": 85.0, "deadline": "2026-11-20", "status": "Aktív", "color": "#0284C7", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "szabo.bence@ceg.hu,kovacs.dori@ceg.hu,nagy.eszter@ceg.hu", "tags": "Figma,Mobile,Ügyfél"},
-        {"id": 3, "name": "E-kereskedelmi Audit", "project_type": "Fixed", "budget_hours": 25.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "2026-10-30", "status": "Aktív", "color": "#DC2626", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,kiss.tamas@ceg.hu", "tags": "Audit,Sürgős"},
+        {"id": 1, "name": "ERP Rendszer Migráció & Adatmodell", "project_type": "Fixed", "budget_hours": 120.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "2026-12-15", "status": "Aktív", "color": "#2563EB", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,varga.mate@ceg.hu,nagy.eszter@ceg.hu", "tags": "Backend,Kritikus,Q4"},
+        {"id": 2, "name": "Vállalati Controlling & BI Dashboard", "project_type": "Fixed", "budget_hours": 60.0, "monthly_retainer_hours": 0.0, "manual_completion": 85.0, "deadline": "2026-11-20", "status": "Aktív", "color": "#0284C7", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "szabo.bence@ceg.hu,kovacs.dori@ceg.hu,nagy.eszter@ceg.hu", "tags": "BI,Elemzés,Ügyfél"},
+        {"id": 3, "name": "Éves Kockázati & Megfelelőségi Audit", "project_type": "Fixed", "budget_hours": 25.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "2026-11-05", "status": "Aktív", "color": "#DC2626", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,kiss.tamas@ceg.hu", "tags": "Audit,Sürgős"},
         # 2. Átalánydíjas (Retainer) projektek
-        {"id": 4, "name": "Átalánydíjas IT és Üzleti Tanácsadás", "project_type": "Retainer", "budget_hours": 0.0, "monthly_retainer_hours": 40.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#7C3AED", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,varga.mate@ceg.hu,nagy.eszter@ceg.hu,kiss.tamas@ceg.hu", "tags": "Retainer,SLA,Havi"},
-        {"id": 5, "name": "24/7 DevOps & Felhő Üzemeltetés", "project_type": "Retainer", "budget_hours": 0.0, "monthly_retainer_hours": 30.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#0D9488", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "varga.mate@ceg.hu,kovacs.dori@ceg.hu", "tags": "AWS,Support"},
+        {"id": 4, "name": "Átalánydíjas Üzleti és Szakmai Tanácsadás", "project_type": "Retainer", "budget_hours": 0.0, "monthly_retainer_hours": 40.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#7C3AED", "owner_email": "nagy.eszter@ceg.hu", "assigned_to": "kovacs.dori@ceg.hu,varga.mate@ceg.hu,nagy.eszter@ceg.hu,kiss.tamas@ceg.hu", "tags": "Retainer,Átalánydíjas,Havi"},
+        {"id": 5, "name": "Folyamatos Rendszertámogatás (SLA)", "project_type": "Retainer", "budget_hours": 0.0, "monthly_retainer_hours": 30.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#0D9488", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "varga.mate@ceg.hu,szabo.bence@ceg.hu", "tags": "SLA,Support"},
         # 3. Belső / Adminisztratív kategóriák (Globális: assigned_to = '*')
         {"id": 6, "name": "Adminisztráció & Napi Operáció", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#64748B", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "Belső,Nem elszámolható"},
-        {"id": 7, "name": "Belső Megbeszélés & Sprint Planning", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#475569", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "Meeting,Scrum"},
-        {"id": 8, "name": "Oktatás, Képzés & Kutatás", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#94A3B8", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "L&D,Fejlődés"},
+        {"id": 7, "name": "Belső Megbeszélés & Csapatmeeting", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#475569", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "Meeting,Belső"},
+        {"id": 8, "name": "Oktatás, Szakmai Képzés & Kutatás", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#94A3B8", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "Képzés,Fejlődés"},
         {"id": 9, "name": "Szabadság / Távollét", "project_type": "Admin", "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0, "deadline": "-", "status": "Aktív", "color": "#CBD5E1", "owner_email": "kiss.tamas@ceg.hu", "assigned_to": "*", "tags": "HR,Szabadság"},
     ])
 
     logs = pd.DataFrame([
-        # Kovács Dóra heti logjai
-        {"id": 101, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": d_str(0), "hours": 5.5, "notes": "Adatbázis séma migrációs szkriptek írása"},
-        {"id": 102, "email": "kovacs.dori@ceg.hu", "project_id": 4, "date": d_str(0), "hours": 1.5, "notes": "Ügyfél architektúra egyeztetés"},
-        {"id": 103, "email": "kovacs.dori@ceg.hu", "project_id": 7, "date": d_str(0), "hours": 1.0, "notes": "Hétindító Sprint Planning"},
-        {"id": 104, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": d_str(1), "hours": 6.0, "notes": "API végpontok refaktorálása"},
-        {"id": 105, "email": "kovacs.dori@ceg.hu", "project_id": 2, "date": d_str(1), "hours": 2.0, "notes": "Komponens könyvtár integráció"},
-        {"id": 106, "email": "kovacs.dori@ceg.hu", "project_id": 3, "date": d_str(2), "hours": 7.5, "notes": "Biztonsági sérülékenység vizsgálat"},
+        {"id": 101, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": d_str(0), "hours": 5.5, "notes": "Adatbázis séma migráció és dokumentáció"},
+        {"id": 102, "email": "kovacs.dori@ceg.hu", "project_id": 4, "date": d_str(0), "hours": 1.5, "notes": "Átalánydíjas ügyfél konzultáció"},
+        {"id": 103, "email": "kovacs.dori@ceg.hu", "project_id": 7, "date": d_str(0), "hours": 1.0, "notes": "Hétindító szakmai egyeztetés"},
+        {"id": 104, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": d_str(1), "hours": 6.0, "notes": "Folyamatok validálása"},
+        {"id": 105, "email": "kovacs.dori@ceg.hu", "project_id": 2, "date": d_str(1), "hours": 2.0, "notes": "Kimutatás sablonok ellenőrzése"},
+        {"id": 106, "email": "kovacs.dori@ceg.hu", "project_id": 3, "date": d_str(2), "hours": 7.5, "notes": "Kockázatelemzési jegyzőkönyv"},
         {"id": 107, "email": "kovacs.dori@ceg.hu", "project_id": 6, "date": d_str(2), "hours": 0.5, "notes": "Heti adminisztráció"},
-        # Szabó Bence heti logjai
-        {"id": 108, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": d_str(0), "hours": 7.0, "notes": "Mobilbanki prototípus képernyők"},
-        {"id": 109, "email": "szabo.bence@ceg.hu", "project_id": 7, "date": d_str(0), "hours": 1.0, "notes": "Design review"},
-        {"id": 110, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": d_str(1), "hours": 8.0, "notes": "Felhasználói tesztelés kiértékelés"},
-        {"id": 111, "email": "szabo.bence@ceg.hu", "project_id": 8, "date": d_str(2), "hours": 4.0, "notes": "Design System workshop"},
-        # Varga Máté és Nagy Eszter logjai (aktuális + előző hónap a trendekhez és készültséghez)
-        {"id": 112, "email": "varga.mate@ceg.hu", "project_id": 4, "date": d_str(0), "hours": 6.0, "notes": "Hálózati topológia tanácsadás"},
-        {"id": 113, "email": "varga.mate@ceg.hu", "project_id": 5, "date": d_str(1), "hours": 7.5, "notes": "Kubernetes cluster frissítés"},
-        {"id": 114, "email": "nagy.eszter@ceg.hu", "project_id": 1, "date": d_str(0), "hours": 4.0, "notes": "Projekt státusz és mérföldkő kontroll"},
-        {"id": 115, "email": "nagy.eszter@ceg.hu", "project_id": 4, "date": d_str(1), "hours": 5.0, "notes": "Havi SLA riportálás ügyfélnek"},
+        {"id": 108, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": d_str(0), "hours": 7.0, "notes": "BI adatkapcsolatok építése"},
+        {"id": 109, "email": "szabo.bence@ceg.hu", "project_id": 7, "date": d_str(0), "hours": 1.0, "notes": "Státusz megbeszélés"},
+        {"id": 110, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": d_str(1), "hours": 8.0, "notes": "Vezetői riport tesztelés"},
+        {"id": 111, "email": "szabo.bence@ceg.hu", "project_id": 8, "date": d_str(2), "hours": 4.0, "notes": "Belső szakmai workshop"},
+        {"id": 112, "email": "varga.mate@ceg.hu", "project_id": 4, "date": d_str(0), "hours": 6.0, "notes": "Infrastruktúra tanácsadás"},
+        {"id": 113, "email": "varga.mate@ceg.hu", "project_id": 5, "date": d_str(1), "hours": 7.5, "notes": "Szerver karbantartás"},
+        {"id": 114, "email": "nagy.eszter@ceg.hu", "project_id": 1, "date": d_str(0), "hours": 4.0, "notes": "Projekt mérföldkő kontroll"},
+        {"id": 115, "email": "nagy.eszter@ceg.hu", "project_id": 4, "date": d_str(1), "hours": 5.0, "notes": "Havi átalánydíjas riportálás"},
         {"id": 116, "email": "nagy.eszter@ceg.hu", "project_id": 6, "date": d_str(1), "hours": 2.0, "notes": "Erőforrás tervezés"},
-        # Korábbi tételek a burn-barok szemléltetéséhez
-        {"id": 117, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": last_month_str, "hours": 72.0, "notes": "Alaprendszer fejlesztés I. fázis"},
-        {"id": 118, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": last_month_str, "hours": 34.0, "notes": "Drótvázak és UI kit"},
-        {"id": 119, "email": "kovacs.dori@ceg.hu", "project_id": 3, "date": last_month_str, "hours": 17.0, "notes": "Kódbázis átvilágítás"},
+        {"id": 117, "email": "kovacs.dori@ceg.hu", "project_id": 1, "date": last_month_str, "hours": 72.0, "notes": "Alaprendszer előkészítés I. fázis"},
+        {"id": 118, "email": "szabo.bence@ceg.hu", "project_id": 2, "date": last_month_str, "hours": 34.0, "notes": "Adatmodell specifikáció"},
+        {"id": 119, "email": "kovacs.dori@ceg.hu", "project_id": 3, "date": last_month_str, "hours": 17.0, "notes": "Előzetes dokumentum átvilágítás"},
     ])
     return users, projects, logs
 
 def normalize_schemas(users_df, projects_df, logs_df):
-    """Biztosítja a visszafelé kompatibilitást a korábbi egyszerű táblázatokkal."""
+    """Biztosítja a visszafelé kompatibilitást a korábbi egyszerű Google Sheets táblázatokkal."""
     u_Seed, p_Seed, l_Seed = get_seed_data()
 
     if users_df is None or users_df.empty:
@@ -344,7 +342,6 @@ def normalize_schemas(users_df, projects_df, logs_df):
         projects_df["monthly_retainer_hours"] = pd.to_numeric(projects_df["monthly_retainer_hours"], errors="coerce").fillna(0.0)
         projects_df["manual_completion"] = pd.to_numeric(projects_df["manual_completion"], errors="coerce").fillna(0.0)
 
-        # Ha még nincsenek Admin vagy Retainer elemek a régi táblában, hozzáfűzzük az alapokat
         if not (projects_df["project_type"] == "Admin").any():
             admin_rows = p_Seed[p_Seed["project_type"].isin(["Admin", "Retainer"])].copy()
             max_id = projects_df["id"].max() if not projects_df.empty else 0
@@ -377,7 +374,6 @@ def init_data_store():
             st.session_state.gsheets_conn = conn
             st.session_state.gsheets_connected = True
             u_df, p_df, l_df = normalize_schemas(u_raw, p_raw, l_raw)
-            # Ha teljesen üres volt a tábla, beírjuk a demó adatokat
             if u_raw.empty:
                 conn.update(worksheet="users", data=u_df)
             if p_raw.empty:
@@ -407,7 +403,6 @@ init_data_store()
 # 3. HITELESÍTÉS, DEMÓ SZEREPKÖR-VÁLTÓ ÉS GLOBÁLIS FEJLÉC
 # ==============================================================================
 if "logged_in" not in st.session_state:
-    # Alapértelmezetten beléptetjük a demó Projektgazdát vagy Admint az azonnali tesztelhetőségért
     st.session_state.logged_in = True
     st.session_state.user_email = st.session_state.users_df.iloc[0]["email"]
     st.session_state.time_format = "decimal"
@@ -416,12 +411,11 @@ users_df = st.session_state.users_df
 projects_df = st.session_state.projects_df
 logs_df = st.session_state.logs_df
 
-# Opcionális klasszikus Login képernyő, ha a felhasználó kijelentkezik
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 1.5, 1])
     with col_l2:
         st.title("⏱️ Chronos Enterprise")
-        st.caption("Vállalati munkaidő-nyilvántartó és projekt-controlling rendszer")
+        st.caption("Böngészős és Mobil (PWA) Munkaidő-nyilvántartó")
         t_log, t_pw = st.tabs(["🔑 Bejelentkezés", "🛠️ Jelszó beállítása"])
         with t_log:
             in_email = st.text_input("E-mail cím", value="kiss.tamas@ceg.hu").strip()
@@ -448,8 +442,8 @@ if not st.session_state.logged_in:
                     st.error("Ismeretlen e-mail vagy üres jelszó!")
     st.stop()
 
-# --- FELSŐ ENTERPRISE CONTROL BAR (Demó Szerepkör/Felhasználó Váltó & Időformátum) ---
-top_c1, top_c2, top_c3 = st.columns([2.2, 2.2, 1.6])
+# --- FELSŐ CONTROL BAR (Mobilon egymás alá törik, asztali gépen egy sorban) ---
+top_c1, top_c2, top_c3 = st.columns([2.2, 2.2, 1.4])
 
 with top_c1:
     user_options = users_df["email"].tolist()
@@ -458,10 +452,10 @@ with top_c1:
 
     def format_user_option(em):
         row = users_df[users_df["email"] == em].iloc[0]
-        return f"🎭 {row['name']} — [{row['role'].upper()}] ({row['title']})"
+        return f"🎭 {row['name']} — [{row['role'].upper()}]"
 
     selected_user_email = st.selectbox(
-        "🔄 Aktív Felhasználó / RBAC Szerepkör Tesztelő (Azonnali váltás):",
+        "🔄 Aktív Felhasználó / Szerepkör Váltó:",
         options=user_options,
         index=user_options.index(st.session_state.user_email),
         format_func=format_user_option
@@ -477,25 +471,22 @@ daily_expected = float(current_user["weekly_capacity"]) / 5.0
 
 with top_c2:
     fmt_map = {
-        "decimal": "🔢 Tizedes óra (2.50 óra)",
+        "decimal": "🔢 Tizedes (2.5 óra)",
         "hhmm": "⌚ Óra:Perc (02:30)",
         "percent": "📊 Napi % (31.3%)"
     }
     st.session_state.time_format = st.radio(
-        "⏱️ Időformátum megjelenítése:",
+        "⏱️ Időformátum:",
         options=list(fmt_map.keys()),
         format_func=lambda k: fmt_map[k],
         horizontal=True
     )
 
 with top_c3:
-    st.write("")
-    status_badge = "🟢 Google Sheets Live" if st.session_state.get("gsheets_connected") else "🟣 In-Memory Demó Mód"
-    st.markdown(f"<div style='text-align:right; padding-top:8px;'><span class='badge badge-admin'>{status_badge}</span></div>", unsafe_allow_html=True)
+    status_badge = "🟢 Google Sheets Live" if st.session_state.get("gsheets_connected") else "🟣 Demó Mód"
+    st.markdown(f"<div style='padding-top:12px;'><span class='badge badge-admin'>{status_badge}</span> <span class='badge badge-fixed'>📱 PWA Mobil-kész</span></div>", unsafe_allow_html=True)
 
-st.divider()
-
-# --- OLDALSÁV (Profil Kártya & Gyors Kapacitás Indikátor) ---
+# --- OLDALSÁV (Profil Kártya, Kapacitás & PWA Mobil Telepítési Segédlet) ---
 with st.sidebar:
     initials = "".join([p[0].upper() for p in str(current_user["name"]).split()[:2]])
     role_cls = "role-admin" if current_role == "Admin" else ("role-pm" if current_role == "Projektgazda" else "role-emp")
@@ -513,7 +504,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # Heti saját kapacitás gyors-indikátor
     today_dt = datetime.now()
     mon_dt = today_dt - timedelta(days=today_dt.weekday())
     sun_dt = mon_dt + timedelta(days=6)
@@ -529,16 +519,20 @@ with st.sidebar:
 
     st.markdown("##### 📅 Saját heti kapacitás")
     st.progress(cap_pct / 100.0)
-    st.caption(f"Rögzítve ezen a héten: **{format_duration(week_logged_sum, st.session_state.time_format, daily_expected)}** / {week_cap:.0f} óra ({cap_pct:.0f}%)")
+    st.caption(f"Rögzítve: **{format_duration(week_logged_sum, st.session_state.time_format, daily_expected)}** / {week_cap:.0f} óra ({cap_pct:.0f}%)")
+
+    with st.expander("📲 Telepítés Mobil Appként (PWA)"):
+        st.markdown("""
+        **Android (Chrome):**
+        1. Koppints a jobb felső **⋮ (három pont)** menüre.
+        2. Válaszd a **„Hozzáadás a kezdőképernyőhöz”** vagy **„Alkalmazás telepítése”** opciót.
+        
+        **iPhone / iPad (Safari):**
+        1. Koppints alul a **Megosztás** (négyzet felfelé nyíllal) ikonra.
+        2. Válaszd a **„Főképernyőhöz adás”** opciót.
+        """)
 
     st.divider()
-    st.markdown("##### 🔐 Jogosultsági öröklődés")
-    st.markdown(f"""
-    - {'✅' if current_role_level >= 1 else '❌'} **Dolgozói modul** *(Saját időrögzítés)*
-    - {'✅' if current_role_level >= 2 else '🔒'} **Projektgazda modul** *(Projektek & Csapat)*
-    - {'✅' if current_role_level >= 3 else '🔒'} **Admin modul** *(Cégszintű & Beállítások)*
-    """)
-    
     if st.button("🚪 Kijelentkezés", use_container_width=True):
         st.session_state.logged_in = False
         st.rerun()
@@ -575,24 +569,22 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
         budget = float(proj_row["budget_hours"]) if float(proj_row["budget_hours"]) > 0 else 1.0
         auto_pct = (total_logged / budget) * 100.0
         manual_pct = float(proj_row.get("manual_completion", 0.0))
-        effective_pct = manual_pct if manual_pct > 0 else auto_pct
 
-        # Színskála: zöld < 75%, sárga 75-95%, piros > 95%
         bar_color = "#10B981" if auto_pct < 75 else ("#F59E0B" if auto_pct <= 95 else "#EF4444")
         width_pct = min(100.0, auto_pct)
-        override_note = f" • 🛠️ Szakmai készültség (felülbírált): <b>{manual_pct:.0f}%</b>" if manual_pct > 0 else ""
+        override_note = f" • 🛠️ Szakmai készültség: <b>{manual_pct:.0f}%</b>" if manual_pct > 0 else ""
 
         st.markdown(f"""
         <div class="saas-card">
             <div class="saas-card-header">
                 <div>
-                    <span style="font-weight:700; font-size:1.05rem; color:#0f172a;">{proj_row['name']}</span>
-                    <span class="badge {badge_cls}" style="margin-left:8px;">{badge_txt}</span>
+                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{proj_row['name']}</span>
+                    <span class="badge {badge_cls}" style="margin-left:6px;">{badge_txt}</span>
                 </div>
-                <div style="font-size:0.85rem; color:#475569;">Határidő: <b>{proj_row['deadline']}</b></div>
+                <div style="font-size:0.82rem; color:#475569;">Határidő: <b>{proj_row['deadline']}</b></div>
             </div>
             <div style="margin-bottom:6px;">{tags_html}</div>
-            <div style="display:flex; justify-content:space-between; font-size:0.82rem; color:#334155;">
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.82rem; color:#334155;">
                 <span>Ledolgozott: <b>{format_duration(total_logged, fmt_mode, daily_exp)}</b> / Keret: <b>{format_duration(budget, fmt_mode, daily_exp)}</b></span>
                 <span>Időarányos: <b>{auto_pct:.1f}%</b>{override_note}</span>
             </div>
@@ -607,21 +599,21 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
         m_logs = p_logs[p_logs["date"].str.startswith(curr_month)] if not p_logs.empty else pd.DataFrame()
         month_hours = m_logs["hours"].sum() if not m_logs.empty else 0.0
         ind_cap = float(proj_row.get("monthly_retainer_hours", 0.0))
-        ind_txt = f" (Indikatív havi keret: {format_duration(ind_cap, fmt_mode, daily_exp)})" if ind_cap > 0 else " (Korlátlan keret)"
+        ind_txt = f" (Indikatív havi: {format_duration(ind_cap, fmt_mode, daily_exp)})" if ind_cap > 0 else " (Korlátlan)"
 
         st.markdown(f"""
         <div class="saas-card">
             <div class="saas-card-header">
                 <div>
-                    <span style="font-weight:700; font-size:1.05rem; color:#0f172a;">{proj_row['name']}</span>
-                    <span class="badge {badge_cls}" style="margin-left:8px;">♾️ {badge_txt}</span>
+                    <span style="font-weight:700; font-size:1.02rem; color:#0f172a;">{proj_row['name']}</span>
+                    <span class="badge {badge_cls}" style="margin-left:6px;">♾️ {badge_txt}</span>
                 </div>
-                <div style="font-size:0.85rem; color:#6b21a8; font-weight:600;">Folyamatos megbízás</div>
+                <div style="font-size:0.82rem; color:#6b21a8; font-weight:600;">Folyamatos megbízás</div>
             </div>
             <div style="margin-bottom:6px;">{tags_html}</div>
-            <div style="font-size:0.84rem; color:#334155;">
-                📅 Aktuális havi ráfordítás ({curr_month}): <b>{format_duration(month_hours, fmt_mode, daily_exp)}</b>{ind_txt}
-                &nbsp;|&nbsp; Összesített eddigi: <b>{format_duration(total_logged, fmt_mode, daily_exp)}</b>
+            <div style="font-size:0.82rem; color:#334155;">
+                📅 Havi ráfordítás ({curr_month}): <b>{format_duration(month_hours, fmt_mode, daily_exp)}</b>{ind_txt}
+                &nbsp;|&nbsp; Összesített: <b>{format_duration(total_logged, fmt_mode, daily_exp)}</b>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -629,11 +621,11 @@ def render_project_burn_card(proj_row, logs_data, fmt_mode, daily_exp=8.0):
 # ==============================================================================
 # FŐ NAVIGÁCIÓS FÜLEK (RBAC ÖRÖKLŐDÉSSEL)
 # ==============================================================================
-main_tabs_labels = ["⏱️ Saját Munkaidő & Analitika (Dolgozói nézet)"]
+main_tabs_labels = ["⏱️ Saját Munkaidő (Dolgozói nézet)"]
 if current_role_level >= 2:
-    main_tabs_labels.append("📂 Projektgazda & Csapat Irányítópult")
+    main_tabs_labels.append("📂 Projektgazda & Csapat")
 if current_role_level >= 3:
-    main_tabs_labels.append("🏢 Vállalati Admin & Globális Beállítások")
+    main_tabs_labels.append("🏢 Vállalati Admin")
 
 main_tabs = st.tabs(main_tabs_labels)
 
@@ -643,16 +635,14 @@ main_tabs = st.tabs(main_tabs_labels)
 with main_tabs[0]:
     my_accessible_projs = get_user_accessible_projects(current_user["email"])
     
-    # Dátum / Hét választó sáv
-    nav_c1, nav_c2, nav_c3 = st.columns([1.5, 2.5, 2])
+    nav_c1, nav_c2, nav_c3 = st.columns([1.4, 2.3, 2.3])
     with nav_c1:
-        selected_ref_date = st.date_input("📅 Kiválasztott dátum / hét:", datetime.now(), key="emp_ref_date")
+        selected_ref_date = st.date_input("📅 Kiválasztott nap / hét:", datetime.now(), key="emp_ref_date")
     
     start_of_week = selected_ref_date - timedelta(days=selected_ref_date.weekday())
     week_dates = [(start_of_week + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
     day_names_short = ["Hétfő", "Kedd", "Szerda", "Csütörtök", "Péntek", "Szombat", "Vasárnap"]
 
-    # Napi és heti kapacitás-indikátor kártyák
     sel_date_str = selected_ref_date.strftime("%Y-%m-%d")
     day_logged = logs_df[(logs_df["email"] == current_user["email"]) & (logs_df["date"] == sel_date_str)]["hours"].sum() if not logs_df.empty else 0.0
     week_logged = logs_df[(logs_df["email"] == current_user["email"]) & (logs_df["date"].isin(week_dates))]["hours"].sum() if not logs_df.empty else 0.0
@@ -660,7 +650,7 @@ with main_tabs[0]:
     with nav_c2:
         day_status_icon = "✅ Elérve" if day_logged >= daily_expected else "⏳ Folyamatban"
         st.metric(
-            label=f"Napi rögzített idő ({sel_date_str}) — {day_status_icon}",
+            label=f"Napi rögzített ({sel_date_str}) — {day_status_icon}",
             value=format_duration(day_logged, st.session_state.time_format, daily_expected),
             delta=f"Elvárt napi: {format_duration(daily_expected, st.session_state.time_format, daily_expected)}"
         )
@@ -668,39 +658,69 @@ with main_tabs[0]:
         wk_cap = float(current_user["weekly_capacity"])
         wk_status_icon = "✅ Teljesítve" if week_logged >= wk_cap else "📈 Heti egyenleg"
         st.metric(
-            label=f"Heti összesített ({week_dates[0]} – {week_dates[6]}) — {wk_status_icon}",
+            label=f"Heti összesen ({week_dates[0][5:]} – {week_dates[6][5:]}) — {wk_status_icon}",
             value=format_duration(week_logged, st.session_state.time_format, daily_expected),
             delta=f"Heti keret: {wk_cap:.0f} óra"
         )
 
-    # Nézetváltó fülek a többformátumú munkarögzítéshez
     view_tab1, view_tab2, view_tab3, view_tab4 = st.tabs([
-        "📝 1. Napi részletes nézet (Daily Log)",
-        "📊 2. Heti mátrix nézet (Timesheet Grid)",
-        "🧱 3. Naptár / Időblokk nézet (Timeblock)",
-        "📈 4. Saját Projektek & Időmegoszlás"
+        "📱 1. Napi & Mobil Gyorsrögzítő",
+        "📊 2. Heti Mátrix (Grid)",
+        "🧱 3. Naptár / Időblokk",
+        "📈 4. Projektek & Analitika"
     ])
 
     # --------------------------------------------------------------------------
-    # 1.1 NAPI RÉSZLETES NÉZET (DAILY LOG)
+    # 1.1 NAPI RÉSZLETES NÉZET + 1-ÉRINTÉSES MOBIL GYORSRÖGZÍTŐ
     # --------------------------------------------------------------------------
     with view_tab1:
+        proj_choices = my_accessible_projs["id"].tolist()
+        def fmt_proj_label(pid):
+            pr = my_accessible_projs[my_accessible_projs["id"] == pid].iloc[0]
+            tag = "FIX" if pr["project_type"] == "Fixed" else ("RETAINER" if pr["project_type"] == "Retainer" else "ADMIN")
+            return f"[{tag}] {pr['name']}"
+
+        # --- MOBIL 1-ÉRINTÉSES GYORSRÖGZÍTŐ SÁV ---
+        st.markdown('<div class="quick-tap-box">', unsafe_allow_html=True)
+        st.markdown("##### ⚡ Mobil Gyorsrögzítő (1 érintéssel a kiválasztott napra)")
+        q_col1, q_col2 = st.columns([2, 3])
+        with q_col1:
+            quick_pid = st.selectbox(
+                "Projekt kiválasztása:",
+                options=proj_choices,
+                format_func=fmt_proj_label,
+                key="quick_mobile_proj"
+            )
+        with q_col2:
+            st.caption(f"Koppints egy gombra az azonnali rögzítéshez ({sel_date_str}):")
+            b_cols = st.columns(4)
+            quick_presets = [("➕ 0.5 ó", 0.5), ("➕ 1 óra", 1.0), ("➕ 2 óra", 2.0), ("✅ 4 óra", 4.0)]
+            for idx_q, (btn_label, hrs_q) in enumerate(quick_presets):
+                if b_cols[idx_q].button(btn_label, key=f"qbtn_{idx_q}", use_container_width=True):
+                    new_log_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
+                    quick_entry = pd.DataFrame([{
+                        "id": new_log_id,
+                        "email": current_user["email"],
+                        "project_id": int(quick_pid),
+                        "date": sel_date_str,
+                        "hours": float(hrs_q),
+                        "notes": "📱 Mobil gyorsrögzítés"
+                    }])
+                    save_table("logs", pd.concat([logs_df, quick_entry], ignore_index=True))
+                    st.toast(f"Rögzítve: {hrs_q} óra!", icon="✅")
+                    st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
         dl_col1, dl_col2 = st.columns([1.2, 1.8])
         
         with dl_col1:
-            st.markdown(f"#### ➕ Új tétel rögzítése ({sel_date_str})")
+            st.markdown(f"#### ➕ Részletes tétel rögzítése ({sel_date_str})")
             st.caption("Beírhatsz **tizedes órát** (`2.5`), **óra:percet** (`02:30`) vagy **napi %-ot** (`31.25%`).")
             
             with st.form("daily_log_add_form", clear_on_submit=True):
-                proj_choices = my_accessible_projs["id"].tolist()
-                def fmt_proj_label(pid):
-                    pr = my_accessible_projs[my_accessible_projs["id"] == pid].iloc[0]
-                    tag = "FIX" if pr["project_type"] == "Fixed" else ("RETAINER" if pr["project_type"] == "Retainer" else "ADMIN")
-                    return f"[{tag}] {pr['name']}"
-
                 sel_pid = st.selectbox("Projekt / Admin tevékenység:", options=proj_choices, format_func=fmt_proj_label)
-                raw_time_str = st.text_input("Időtartam (pl. 2.5 vagy 02:30 vagy 25%):", value="1.0")
-                note_txt = st.text_input("Megjegyzés / Elvégzett feladat leírása:", placeholder="Pl. Sprint planning vagy API fejlesztés...")
+                raw_time_str = st.text_input("Időtartam (pl. 2.5 vagy 02:30 vagy 25%):", value="1.5")
+                note_txt = st.text_input("Megjegyzés / Elvégzett feladat:", placeholder="Pl. Ügyfélegyeztetés, elemzés...")
                 
                 if st.form_submit_button("💾 Munkaidő mentése", use_container_width=True, type="primary"):
                     parsed_hrs = parse_duration_input(raw_time_str, daily_expected)
@@ -732,11 +752,11 @@ with main_tabs[0]:
                 for _, item in day_merged.iterrows():
                     pt = item["project_type"]
                     b_cls = "badge-fixed" if pt == "Fixed" else ("badge-retainer" if pt == "Retainer" else "badge-admin")
-                    c1, c2 = st.columns([4.5, 1])
+                    c1, c2 = st.columns([4.2, 1])
                     with c1:
                         st.markdown(f"""
                         <div class="saas-card" style="padding:12px 16px; margin-bottom:8px; border-left: 4px solid {item['color']};">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
                                 <div>
                                     <span style="font-weight:700; color:#0f172a;">{item['name']}</span>
                                     <span class="badge {b_cls}" style="margin-left:6px;">{TYPE_LABELS.get(pt, pt)}</span>
@@ -758,13 +778,12 @@ with main_tabs[0]:
     # 1.2 HETI MÁTRIX NÉZET (WEEKLY TIMESHEET GRID)
     # --------------------------------------------------------------------------
     with view_tab2:
-        st.markdown("#### ⌨️ Heti Mátrix Táblázat (Gyors billentyűzetes rögzítés)")
+        st.markdown("#### ⌨️ Heti Mátrix Táblázat (Gyors táblázatos rögzítés)")
         st.caption(
-            f"A cellákba közvetlenül írhatsz **tizedes órát** (`2.5`), **óra:percet** (`02:30`) vagy **százalékot** (`50%`). "
-            f"Jelenlegi megjelenítési mód: **{fmt_map[st.session_state.time_format]}**."
+            f"A cellákba írhatsz **tizedes órát** (`2.5`), **óra:percet** (`02:30`) vagy **százalékot** (`50%`). "
+            f"Aktív formátum: **{fmt_map[st.session_state.time_format]}**."
         )
 
-        # Mátrix felépítése: Sorok = Elérhető projektek + Admin kategóriák, Oszlopok = H-V
         matrix_rows = []
         user_wk_logs = logs_df[(logs_df["email"] == current_user["email"]) & (logs_df["date"].isin(week_dates))]
 
@@ -795,7 +814,6 @@ with main_tabs[0]:
             key=f"weekly_grid_{week_dates[0]}_{st.session_state.time_format}"
         )
 
-        # Napi oszlop-összesítő sáv megjelenítése a mátrix alatt
         summary_cols = st.columns(8)
         summary_cols[0].markdown("**Napi összesen:**")
         for idx, d_iso in enumerate(week_dates):
@@ -806,8 +824,7 @@ with main_tabs[0]:
                 unsafe_allow_html=True
             )
 
-        if st.button("💾 Heti mátrix módosításainak mentése", type="primary"):
-            # Megtartjuk a meglévő megjegyzéseket, ha a napi projekt-összeg nem változott, egyébként frissítjük a cellát
+        if st.button("💾 Heti mátrix módosításainak mentése", type="primary", use_container_width=True):
             remaining_logs = logs_df[~((logs_df["email"] == current_user["email"]) & (logs_df["date"].isin(week_dates)))].copy()
             new_grid_entries = []
             next_id = int(logs_df["id"].max() + 1) if not logs_df.empty else 1
@@ -819,7 +836,6 @@ with main_tabs[0]:
                     val_raw = str(r[col_label]).strip()
                     hrs_val = parse_duration_input(val_raw, daily_expected) if val_raw else 0.0
                     if hrs_val and hrs_val > 0:
-                        # Korábbi megjegyzés megőrzése, ha volt
                         prev_notes = user_wk_logs[(user_wk_logs["project_id"] == pid) & (user_wk_logs["date"] == d_iso)]["notes"].tolist()
                         merged_note = "; ".join([n for n in prev_notes if n]) if prev_notes else "Heti mátrix rögzítés"
                         new_grid_entries.append({
@@ -829,409 +845,3 @@ with main_tabs[0]:
                             "date": d_iso,
                             "hours": float(hrs_val),
                             "notes": merged_note
-                        })
-                        next_id += 1
-
-            updated_all_logs = pd.concat([remaining_logs, pd.DataFrame(new_grid_entries)], ignore_index=True)
-            save_table("logs", updated_all_logs)
-            st.success("A heti mátrix adatai sikeresen szinkronizálva!")
-            st.rerun()
-
-    # --------------------------------------------------------------------------
-    # 1.3 NAPTÁR / IDŐBLOKK NÉZET (TIMEBLOCK VIEW)
-    # --------------------------------------------------------------------------
-    with view_tab3:
-        st.markdown("#### 🧱 Vizuális Napi Időblokk Nézet (Arányos napi megoszlás)")
-        st.caption(f"A sávok szélessége arányosan mutatja az adott napi munkaidő-felhasználást a napi **{daily_expected:.1f} órás** kapacitáshoz mérten.")
-
-        wk_logs_merged = pd.merge(
-            user_wk_logs, projects_df, left_on="project_id", right_on="id", how="inner"
-        ) if not user_wk_logs.empty else pd.DataFrame()
-
-        for idx, d_iso in enumerate(week_dates):
-            d_df = wk_logs_merged[wk_logs_merged["date"] == d_iso] if not wk_logs_merged.empty else pd.DataFrame()
-            d_sum = d_df["hours"].sum() if not d_df.empty else 0.0
-            base_denom = max(daily_expected, d_sum, 1.0)
-
-            st.markdown(f"**{day_names_short[idx]} ({d_iso})** — Összesen: `{format_duration(d_sum, st.session_state.time_format, daily_expected)}`")
-            
-            if d_df.empty:
-                st.markdown("""
-                <div class="timeblock-container">
-                    <div class="timeblock-segment" style="width:100%; background-color:#e2e8f0; color:#64748b;">
-                        Nincs rögzített időblokk
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                segments_html = ""
-                for _, seg in d_df.iterrows():
-                    w_pct = (float(seg["hours"]) / base_denom) * 100.0
-                    seg_color = seg["color"] if seg.get("color") else TYPE_COLORS.get(seg["project_type"], "#2563EB")
-                    label_str = f"{seg['name']} ({format_duration(seg['hours'], st.session_state.time_format, daily_expected)})"
-                    segments_html += f'<div class="timeblock-segment" style="width:{w_pct:.2f}%; background-color:{seg_color};" title="{label_str}">{label_str}</div>'
-                
-                if d_sum < daily_expected:
-                    rem_pct = ((daily_expected - d_sum) / base_denom) * 100.0
-                    segments_html += f'<div class="timeblock-segment" style="width:{rem_pct:.2f}%; background-color:#f1f5f9; color:#64748b;">Szabad: {format_duration(daily_expected - d_sum, st.session_state.time_format, daily_expected)}</div>'
-
-                st.markdown(f'<div class="timeblock-container">{segments_html}</div>', unsafe_allow_html=True)
-
-    # --------------------------------------------------------------------------
-    # 1.4 SAJÁT PROJEKTEK ÁLLÁSA & MUNKAIDŐ-MEGOSZLÁS DIAGRAMOK
-    # --------------------------------------------------------------------------
-    with view_tab4:
-        an_col1, an_col2 = st.columns([1.1, 1.3])
-
-        with an_col1:
-            st.markdown("#### 🍩 Saját Munkaidő-megoszlás")
-            period_choice = st.radio(
-                "Időszak:",
-                ["Napi", "Heti", "Havi"],
-                horizontal=True,
-                key="emp_chart_period"
-            )
-            my_all_logs = logs_df[logs_df["email"] == current_user["email"]].copy()
-            if not my_all_logs.empty:
-                if period_choice == "Napi":
-                    filtered_l = my_all_logs[my_all_logs["date"] == sel_date_str]
-                elif period_choice == "Heti":
-                    filtered_l = my_all_logs[my_all_logs["date"].isin(week_dates)]
-                else:
-                    curr_ym = selected_ref_date.strftime("%Y-%m")
-                    filtered_l = my_all_logs[my_all_logs["date"].str.startswith(curr_ym)]
-
-                if not filtered_l.empty:
-                    m_chart = pd.merge(filtered_l, projects_df, left_on="project_id", right_on="id")
-                    m_chart["Kategória"] = m_chart["project_type"].map(TYPE_LABELS)
-                    grp = m_chart.groupby("Kategória")["hours"].sum().reset_index()
-
-                    fig_donut = px.pie(
-                        grp, values="hours", names="Kategória", hole=0.58,
-                        color="Kategória",
-                        color_discrete_map={
-                            TYPE_LABELS["Fixed"]: TYPE_COLORS["Fixed"],
-                            TYPE_LABELS["Retainer"]: TYPE_COLORS["Retainer"],
-                            TYPE_LABELS["Admin"]: TYPE_COLORS["Admin"]
-                        }
-                    )
-                    fig_donut.update_layout(margin=dict(t=15, b=15, l=15, r=15), height=300, legend=dict(orientation="h", y=-0.15))
-                    st.plotly_chart(fig_donut, use_container_width=True)
-                else:
-                    st.info("A kiválasztott időszakban nincs rögzített adat.")
-            else:
-                st.info("Még nincs rögzített munkaidőd.")
-
-        with an_col2:
-            st.markdown("#### 🎯 Hozzám rendelt aktív projektek állása")
-            client_projs = my_accessible_projs[my_accessible_projs["project_type"].isin(["Fixed", "Retainer"])]
-            if client_projs.empty:
-                st.info("Nincs hozzád rendelt ügyfélprojekt.")
-            else:
-                for _, pr in client_projs.iterrows():
-                    render_project_burn_card(pr, logs_df, st.session_state.time_format, daily_expected)
-
-
-# ==============================================================================
-# MODUL 2: PROJEKTGAZDA (PM) ÉS CSAPAT IRÁNYÍTÓPULT (RBAC >= 2)
-# ==============================================================================
-if current_role_level >= 2:
-    with main_tabs[1]:
-        pm_sub1, pm_sub2, pm_sub3 = st.tabs([
-            "👥 Csapat & Munkatárs Profilok (Utilization)",
-            "📂 Projektek Kezelése & Készültségi Fok",
-            "📊 Csapat Analitika (Projekt vs. Retainer vs. Admin)"
-        ])
-
-        # ----------------------------------------------------------------------
-        # 2.1 FELHASZNÁLÓI PROFILOK ÉS MINI-DASHBOARD KÁRTYÁK
-        # ----------------------------------------------------------------------
-        with pm_sub1:
-            st.markdown("#### 👥 Munkatárs Profilok és Heti Kihasználtsági Mutatók (Utilization Rate)")
-            st.caption(
-                f"Vizsgált hét: **{week_dates[0]} – {week_dates[6]}**. "
-                "A kihasználtsági sáv (Utilization Rate) megmutatja az **Ügyfélprojektek (Fix + Átalánydíjas)** és a **Nem elszámolható / Admin** órák arányát."
-            )
-
-            f_dept = st.selectbox("Szűrés részleg / csapat szerint:", ["Összes részleg"] + users_df["department"].unique().tolist())
-            staff_df = users_df if f_dept == "Összes részleg" else users_df[users_df["department"] == f_dept]
-
-            profile_cols = st.columns(2)
-            wk_logs_all = logs_df[logs_df["date"].isin(week_dates)] if not logs_df.empty else pd.DataFrame()
-            wk_merged_all = pd.merge(wk_logs_all, projects_df, left_on="project_id", right_on="id") if not wk_logs_all.empty else pd.DataFrame()
-
-            for idx, (_, u_row) in enumerate(staff_df.iterrows()):
-                u_em = u_row["email"]
-                u_cap = float(u_row["weekly_capacity"])
-                u_daily_exp = u_cap / 5.0
-                u_logs = wk_merged_all[wk_merged_all["email"] == u_em] if not wk_merged_all.empty else pd.DataFrame()
-
-                tot_wk_hrs = u_logs["hours"].sum() if not u_logs.empty else 0.0
-                client_hrs = u_logs[u_logs["project_type"].isin(["Fixed", "Retainer"])]["hours"].sum() if not u_logs.empty else 0.0
-                admin_hrs = u_logs[u_logs["project_type"] == "Admin"]["hours"].sum() if not u_logs.empty else 0.0
-
-                billable_util_pct = (client_hrs / tot_wk_hrs * 100.0) if tot_wk_hrs > 0 else 0.0
-                admin_util_pct = (admin_hrs / tot_wk_hrs * 100.0) if tot_wk_hrs > 0 else 0.0
-
-                # Aktív projektek címkéi ezen a héten
-                active_p_names = u_logs["name"].unique().tolist() if not u_logs.empty else []
-                pills_html = "".join([f"<span class='proj-pill'>{pn}</span>" for pn in active_p_names]) if active_p_names else "<span style='color:#94a3b8; font-size:0.78rem;'>Még nincs rögzített projekt a héten</span>"
-
-                u_initials = "".join([p[0].upper() for p in str(u_row["name"]).split()[:2]])
-                r_cls = "role-admin" if u_row["role"] == "Admin" else ("role-pm" if u_row["role"] == "Projektgazda" else "role-emp")
-                avatar_bg = "#2563EB" if u_row["role"] == "Dolgozó" else ("#7C3AED" if u_row["role"] == "Projektgazda" else "#DC2626")
-
-                with profile_cols[idx % 2]:
-                    st.markdown(f"""
-                    <div class="saas-card">
-                        <div class="saas-card-header">
-                            <div style="display:flex; align-items:center;">
-                                <div class="avatar-circle" style="background-color:{avatar_bg};">{u_initials}</div>
-                                <div>
-                                    <div style="font-weight:700; font-size:1.05rem; color:#0f172a;">{u_row['name']}</div>
-                                    <div style="font-size:0.8rem; color:#64748b;">{u_row['title']} • <b>{u_row['department']}</b></div>
-                                </div>
-                            </div>
-                            <span class="badge {r_cls}">{u_row['role']}</span>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; font-size:0.82rem; margin-top:10px; color:#334155;">
-                            <span>Heti státusz: <b>{format_duration(tot_wk_hrs, st.session_state.time_format, u_daily_exp)}</b> / {u_cap:.0f} óra</span>
-                            <span>Kihasználtság: <b style="color:#2563EB;">{billable_util_pct:.0f}% Ügyfél</b> | <b style="color:#64748B;">{admin_util_pct:.0f}% Admin</b></span>
-                        </div>
-                        <div class="progress-track" style="display:flex; height:10px; margin:8px 0 12px 0;">
-                            <div style="width:{billable_util_pct:.1f}%; background-color:#2563EB;" title="Ügyfélprojektek"></div>
-                            <div style="width:{admin_util_pct:.1f}%; background-color:#94A3B8;" title="Adminisztráció"></div>
-                        </div>
-                        <div style="font-size:0.78rem; color:#475569; margin-bottom:4px;"><b>Aktív heti projektek:</b></div>
-                        <div>{pills_html}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        # ----------------------------------------------------------------------
-        # 2.2 PROJEKTEK LÉTREHOZÁSA, TESTRESZABÁSA ÉS MANUÁLIS KÉSZÜLTSÉG
-        # ----------------------------------------------------------------------
-        with pm_sub2:
-            pm_c1, pm_c2 = st.columns([1.15, 1.85])
-
-            with pm_c1:
-                st.markdown("#### ➕ Új Projekt Létrehozása / Meglévő Szerkesztése")
-                edit_mode = st.radio("Művelet:", ["Új projekt indítása", "Meglévő projekt módosítása / Archiválása"], horizontal=True)
-
-                if edit_mode == "Új projekt indítása":
-                    with st.form("pm_create_proj_form"):
-                        p_name = st.text_input("Projekt megnevezése:")
-                        p_type = st.selectbox("Projekttípus:", ["Fixed", "Retainer", "Admin"], format_func=lambda x: TYPE_LABELS[x])
-                        col_b1, col_b2 = st.columns(2)
-                        with col_b1:
-                            p_budget = st.number_input("Fix órakeret (Fixed esetén):", min_value=0.0, value=80.0, step=5.0)
-                        with col_b2:
-                            p_retainer = st.number_input("Havi indikatív óra (Retainer):", min_value=0.0, value=0.0, step=5.0)
-                        p_deadline = st.text_input("Határidő (YYYY-MM-DD vagy '-'):", value="2026-12-31")
-                        p_tags = st.text_input("Egyedi címkék (vesszővel elválasztva):", value="Ügyfél,Q4")
-                        p_color = st.color_picker("Projekt színkódja:", value="#2563EB")
-                        assigned_emps = st.multiselect("Hozzárendelt csapattagok:", options=users_df["email"].tolist(), default=[current_user["email"]])
-
-                        if st.form_submit_button("🚀 Projekt létrehozása", use_container_width=True, type="primary"):
-                            if not p_name.strip():
-                                st.error("A projekt neve kötelező!")
-                            else:
-                                new_pid = int(projects_df["id"].max() + 1) if not projects_df.empty else 1
-                                assigned_str = "*" if p_type == "Admin" else ",".join(assigned_emps)
-                                new_p_row = pd.DataFrame([{
-                                    "id": new_pid,
-                                    "name": p_name.strip(),
-                                    "project_type": p_type,
-                                    "budget_hours": float(p_budget) if p_type == "Fixed" else 0.0,
-                                    "monthly_retainer_hours": float(p_retainer) if p_type == "Retainer" else 0.0,
-                                    "manual_completion": 0.0,
-                                    "deadline": p_deadline.strip() if p_type == "Fixed" else "-",
-                                    "status": "Aktív",
-                                    "color": p_color,
-                                    "owner_email": current_user["email"],
-                                    "assigned_to": assigned_str,
-                                    "tags": p_tags.strip()
-                                }])
-                                save_table("projects", pd.concat([projects_df, new_p_row], ignore_index=True))
-                                st.success(f"'{p_name}' sikeresen létrehozva!")
-                                st.rerun()
-                else:
-                    sel_edit_pid = st.selectbox(
-                        "Válaszd ki a szerkesztendő projektet:",
-                        options=projects_df["id"].tolist(),
-                        format_func=lambda i: f"#{i} - {projects_df[projects_df['id'] == i].iloc[0]['name']}"
-                    )
-                    curr_p = projects_df[projects_df["id"] == sel_edit_pid].iloc[0]
-                    with st.form("pm_edit_proj_form"):
-                        e_name = st.text_input("Projekt neve:", value=curr_p["name"])
-                        e_status = st.selectbox("Státusz:", ["Aktív", "Archivált"], index=0 if curr_p["status"] == "Aktív" else 1)
-                        e_budget = st.number_input("Fix órakeret (budget_hours):", min_value=0.0, value=float(curr_p["budget_hours"]), step=5.0)
-                        e_manual_pct = st.slider(
-                            "🛠️ Szakmai készültségi fok felülbírálata (0% = automatikus számítás):",
-                            min_value=0, max_value=100, value=int(float(curr_p.get("manual_completion", 0.0)))
-                        )
-                        e_tags = st.text_input("Címkék (Tags):", value=str(curr_p.get("tags", "")))
-                        curr_assigned = [x.strip() for x in str(curr_p["assigned_to"]).split(",") if x.strip() in users_df["email"].values]
-                        e_assigned = st.multiselect("Csapattagok:", options=users_df["email"].tolist(), default=curr_assigned)
-
-                        if st.form_submit_button("💾 Módosítások mentése", use_container_width=True, type="primary"):
-                            idx_p = projects_df[projects_df["id"] == sel_edit_pid].index[0]
-                            projects_df.loc[idx_p, "name"] = e_name.strip()
-                            projects_df.loc[idx_p, "status"] = e_status
-                            projects_df.loc[idx_p, "budget_hours"] = float(e_budget)
-                            projects_df.loc[idx_p, "manual_completion"] = float(e_manual_pct)
-                            projects_df.loc[idx_p, "tags"] = e_tags.strip()
-                            if curr_p["project_type"] != "Admin":
-                                projects_df.loc[idx_p, "assigned_to"] = ",".join(e_assigned)
-                            save_table("projects", projects_df)
-                            st.success("Projekt adatai frissítve!")
-                            st.rerun()
-
-            with pm_c2:
-                st.markdown("#### 📊 Projekt Portfólió Készültségi & Burn Monitor")
-                filter_ptype = st.radio("Szűrés típusra:", ["Összes ügyfélprojekt", "Fixed", "Retainer"], horizontal=True)
-                p_view = projects_df[projects_df["status"] == "Aktív"].copy()
-                if filter_ptype == "Összes ügyfélprojekt":
-                    p_view = p_view[p_view["project_type"].isin(["Fixed", "Retainer"])]
-                else:
-                    p_view = p_view[p_view["project_type"] == filter_ptype]
-
-                for _, pr in p_view.iterrows():
-                    render_project_burn_card(pr, logs_df, st.session_state.time_format, daily_expected)
-
-        # ----------------------------------------------------------------------
-        # 2.3 CSAPAT VIZUÁLIS ANALITIKA
-        # ----------------------------------------------------------------------
-        with pm_sub3:
-            st.markdown("#### 📈 Munkaidő-megoszlás: Fix Projekt vs. Átalánydíjas vs. Nem elszámolható / Admin")
-            if not logs_df.empty and not projects_df.empty:
-                full_an = pd.merge(logs_df, projects_df, left_on="project_id", right_on="id")
-                full_an = pd.merge(full_an, users_df[["email", "name", "department"]], on="email", how="left", suffixes=("_proj", "_user"))
-                full_an["Kategória"] = full_an["project_type"].map({
-                    "Fixed": "1. Fix keretes projektek",
-                    "Retainer": "2. Átalánydíjas tanácsadás (Retainer)",
-                    "Admin": "3. Nem elszámolható / Admin"
-                })
-
-                ch_c1, ch_c2 = st.columns(2)
-                with ch_c1:
-                    st.markdown("##### 📊 Munkatársankénti óramegoszlás (Stacked Bar)")
-                    emp_grp = full_an.groupby(["name_user", "Kategória"])["hours"].sum().reset_index()
-                    fig_bar = px.bar(
-                        emp_grp, x="name_user", y="hours", color="Kategória",
-                        barmode="stack",
-                        labels={"name_user": "Munkatárs", "hours": "Rögzített órák"},
-                        color_discrete_map={
-                            "1. Fix keretes projektek": TYPE_COLORS["Fixed"],
-                            "2. Átalánydíjas tanácsadás (Retainer)": TYPE_COLORS["Retainer"],
-                            "3. Nem elszámolható / Admin": TYPE_COLORS["Admin"]
-                        }
-                    )
-                    fig_bar.update_layout(height=360, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=-0.25))
-                    st.plotly_chart(fig_bar, use_container_width=True)
-
-                with ch_c2:
-                    st.markdown("##### 🍩 Cég / Csapat szintű elszámolhatósági arány")
-                    cat_grp = full_an.groupby("Kategória")["hours"].sum().reset_index()
-                    fig_pie = px.pie(
-                        cat_grp, values="hours", names="Kategória", hole=0.55,
-                        color="Kategória",
-                        color_discrete_map={
-                            "1. Fix keretes projektek": TYPE_COLORS["Fixed"],
-                            "2. Átalánydíjas tanácsadás (Retainer)": TYPE_COLORS["Retainer"],
-                            "3. Nem elszámolható / Admin": TYPE_COLORS["Admin"]
-                        }
-                    )
-                    fig_pie.update_layout(height=360, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=-0.25))
-                    st.plotly_chart(fig_pie, use_container_width=True)
-
-
-# ==============================================================================
-# MODUL 3: VÁLLALATI ADMIN & GLOBÁLIS BEÁLLÍTÁSOK (RBAC == 3)
-# ==============================================================================
-if current_role_level >= 3:
-    with main_tabs[2]:
-        adm_tab1, adm_tab2, adm_tab3 = st.tabs([
-            "🏛️ Globális Admin / Overhead Kategóriák",
-            "🔐 Felhasználók & RBAC Jogosultságkezelés",
-            "📥 Cégszintű Controlling & CSV Export"
-        ])
-
-        with adm_tab1:
-            ac1, ac2 = st.columns([1, 1.5])
-            with ac1:
-                st.markdown("#### ➕ Új Globális Admin / Overhead Kategória")
-                st.caption("Ezek a kategóriák minden dolgozó számára automatikusan megjelennek a napi és heti rögzítőben.")
-                with st.form("admin_cat_form"):
-                    cat_name = st.text_input("Kategória neve (pl. Betegszabadság, Céges rendezvény):")
-                    cat_tags = st.text_input("Címkék:", value="Belső,Nem elszámolható")
-                    if st.form_submit_button("Kategória hozzáadása", use_container_width=True, type="primary"):
-                        if cat_name.strip():
-                            new_cid = int(projects_df["id"].max() + 1) if not projects_df.empty else 1
-                            new_cat = pd.DataFrame([{
-                                "id": new_cid, "name": cat_name.strip(), "project_type": "Admin",
-                                "budget_hours": 0.0, "monthly_retainer_hours": 0.0, "manual_completion": 0.0,
-                                "deadline": "-", "status": "Aktív", "color": "#64748B",
-                                "owner_email": current_user["email"], "assigned_to": "*", "tags": cat_tags
-                            }])
-                            save_table("projects", pd.concat([projects_df, new_cat], ignore_index=True))
-                            st.success("Globális admin kategória létrehozva!")
-                            st.rerun()
-            with ac2:
-                st.markdown("#### 📋 Jelenlegi Globális Admin / Overhead Kategóriák")
-                adm_projs = projects_df[projects_df["project_type"] == "Admin"][["id", "name", "status", "tags"]]
-                st.dataframe(adm_projs, use_container_width=True, hide_index=True)
-
-        with adm_tab2:
-            uc1, uc2 = st.columns([1, 1.6])
-            with uc1:
-                st.markdown("#### 👤 Új Munkatárs Felvétele / RBAC Módosítás")
-                with st.form("admin_user_form"):
-                    u_em_in = st.text_input("E-mail cím:")
-                    u_nm_in = st.text_input("Teljes név:")
-                    u_rl_in = st.selectbox("RBAC Szerepkör:", ["Dolgozó", "Projektgazda", "Admin"])
-                    u_ti_in = st.text_input("Beosztás (Title):", value="Szoftverfejlesztő")
-                    u_dp_in = st.text_input("Csapat / Részleg:", value="Fejlesztés")
-                    u_cp_in = st.number_input("Heti elvárt óraszám:", min_value=8, max_value=60, value=40, step=4)
-
-                    if st.form_submit_button("💾 Felhasználó mentése / Frissítése", use_container_width=True, type="primary"):
-                        if u_em_in.strip():
-                            existing_idx = users_df[users_df["email"].str.lower() == u_em_in.strip().lower()].index
-                            if len(existing_idx) > 0:
-                                i = existing_idx[0]
-                                users_df.loc[i, ["name", "role", "title", "department", "weekly_capacity"]] = [
-                                    u_nm_in.strip(), u_rl_in, u_ti_in.strip(), u_dp_in.strip(), int(u_cp_in)
-                                ]
-                            else:
-                                new_u_row = pd.DataFrame([{
-                                    "email": u_em_in.strip(), "password": "123", "name": u_nm_in.strip(),
-                                    "role": u_rl_in, "title": u_ti_in.strip(), "department": u_dp_in.strip(),
-                                    "weekly_capacity": int(u_cp_in)
-                                }])
-                                users_df = pd.concat([users_df, new_u_row], ignore_index=True)
-                            save_table("users", users_df)
-                            st.success("Felhasználói adatok és jogosultságok mentve!")
-                            st.rerun()
-            with uc2:
-                st.markdown("#### 👥 Teljes Felhasználói és Jogosultsági Lista")
-                st.dataframe(
-                    users_df[["name", "email", "role", "title", "department", "weekly_capacity"]],
-                    use_container_width=True, hide_index=True
-                )
-
-        with adm_tab3:
-            st.markdown("#### 📊 Cégszintű Controlling Adattábla és Export")
-            if not logs_df.empty:
-                export_df = pd.merge(logs_df, projects_df[["id", "name", "project_type", "budget_hours"]], left_on="project_id", right_on="id", suffixes=("_log", "_proj"))
-                export_df = pd.merge(export_df, users_df[["email", "name", "department", "role"]], on="email", how="left", suffixes=("_proj", "_user"))
-                st.dataframe(
-                    export_df[["date", "name_user", "department", "name_proj", "project_type", "hours", "notes"]],
-                    use_container_width=True, hide_index=True
-                )
-                csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "📥 Teljes Vállalati Munkaidő Riport Letöltése (CSV / Excel)",
-                    data=csv_bytes,
-                    file_name=f"chronos_enterprise_riport_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    type="primary"
-                )
